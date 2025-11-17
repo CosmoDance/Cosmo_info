@@ -1,70 +1,80 @@
 // server.js
-const express = require('express');
-const bodyParser = require('body-parser');
-const fetch = require('node-fetch');
 
-// Берём ключ из переменных окружения (в Render в разделе Environment)
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+import express from "express";
+import bodyParser from "body-parser";
 
 const app = express();
 app.use(bodyParser.json());
 
-// Простой эндпоинт для проверки, что сервер живой
-app.get('/', (req, res) => {
-  res.send('Cosmo ChatBot server is running');
+// Берём ключ из переменной окружения OPENAI_API_KEY
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+
+if (!OPENAI_API_KEY) {
+  console.warn("⚠️ Переменная окружения OPENAI_API_KEY не задана.");
+}
+
+// Простой health-чек, чтобы Render видел, что сервер жив
+app.get("/", (req, res) => {
+  res.send("CosmoDance bot backend is running ✅");
 });
 
-// Основной эндпоинт для чата
-app.post('/chat', async (req, res) => {
+// Основной эндпоинт для чат-бота
+app.post("/chat", async (req, res) => {
   try {
     const userMessage = req.body.message;
 
     if (!userMessage) {
-      return res.status(400).json({ error: 'Нет текста сообщения (message)' });
+      return res.status(400).json({ error: "Поле 'message' обязательно" });
     }
 
-    const reply = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // ВАЖНО: здесь шаблонная строка с обратными кавычками `
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content:
-              'Ты чат-бот студии танцев CosmoDance (cosmo.su). ' +
-              'Отвечай по-русски, дружелюбно, коротко и по делу. ' +
-              'Если вопрос не по теме танцев и студии, отвечай, но мягко ' +
-              'возвращай человека к теме танцев и занятий в CosmoDance.',
-          },
-          {
-            role: 'user',
-            content: userMessage,
-          },
-        ],
-      }),
-    });
+    const openaiResponse = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4.1-mini",
+          messages: [
+            {
+              role: "system",
+              content:
+                "Ты — чат-бот студии танцев CosmoDance (cosmo.su) в Санкт-Петербурге. " +
+                "Отвечай на вопросы про расписание, направления, возрастные группы, " +
+                "филиалы, абонементы и организацию занятий. Пиши дружелюбно, по-русски, " +
+                "кратко и по делу. Если чего-то не знаешь точно, предложи оставить номер " +
+                "телефона или написать администратору.",
+            },
+            { role: "user", content: userMessage },
+          ],
+        }),
+      }
+    );
 
-    const data = await reply.json();
+    const data = await openaiResponse.json();
 
-    // Пытаемся достать ответ модели
-    const answer =
-      data?.choices?.[0]?.message?.content ||
-      'Извини, не удалось получить ответ от модели. Попробуй ещё раз.';
+    if (!openaiResponse.ok) {
+      console.error("OpenAI API error:", data);
+      return res
+        .status(500)
+        .json({ error: "Ошибка обращения к OpenAI", details: data });
+    }
 
-    res.json({ answer });
+    const reply =
+      data.choices?.[0]?.message?.content ||
+      "Извини, я не смог сформировать ответ, попробуй ещё раз.";
+
+    return res.json({ reply });
   } catch (err) {
-    console.error('Chat error:', err);
-    res.status(500).json({ error: 'Внутренняя ошибка сервера' });
+    console.error("Server error:", err);
+    return res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 });
 
-// Порт для Render
-const PORT = process.env.PORT || 3000;
+// Порт, который задаёт Render
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`Cosmo chatbot server is running on port ${PORT}`);
+  console.log(`🚀 CosmoDance bot server запущен на порту ${PORT}`);
 });
