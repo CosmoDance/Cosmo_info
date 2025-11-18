@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>CosmoDance чат-бот</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0b1120;
+      color: #e5e7eb;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .chat-wrapper {
+      width: 100%;
+      max-width: 480px;
+      height: 90vh;
+      max-height: 720px;
+      background: rgba(15,23,42,0.96);
+      border-radius: 24px;
+      border: 1px solid rgba(148,163,184,0.35);
+      box-shadow: 0 20px 50px rgba(15,23,42,0.8);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-header {
+      padding: 16px 20px;
+      border-bottom: 1px solid rgba(148,163,184,0.3);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: radial-gradient(circle at top left,#22d3ee,#4f46e5);
+      color: white;
+    }
+    .chat-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 20px;
+    }
+    .chat-header-text {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .chat-header-title {
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .chat-header-sub {
+      font-size: 12px;
+      opacity: 0.9;
+    }
+    .chat-messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      background: radial-gradient(circle at top,#020617,#0b1120);
+    }
+    .msg {
+      max-width: 90%;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 16px;
+      font-size: 14px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .msg-user {
+      margin-left: auto;
+      background: #4f46e5;
+      color: #e5e7eb;
+      border-bottom-right-radius: 4px;
+    }
+    .msg-bot {
+      margin-right: auto;
+      background: rgba(15,23,42,0.95);
+      border: 1px solid rgba(148,163,184,0.35);
+      border-bottom-left-radius: 4px;
+    }
+    .msg-bot strong {
+      color: #38bdf8;
+    }
+    .chat-input-wrap {
+      border-top: 1px solid rgba(148,163,184,0.3);
+      padding: 10px 12px;
+      background: #020617;
+      display: flex;
+      gap: 8px;
+    }
+    .chat-input {
+      flex: 1;
+      border-radius: 999px;
+      border: 1px solid rgba(148,163,184,0.5);
+      padding: 10px 14px;
+      font-size: 14px;
+      outline: none;
+      background: #020617;
+      color: #e5e7eb;
+    }
+    .chat-input::placeholder {
+      color: #6b7280;
+    }
+    .chat-send-btn {
+      border-radius: 999px;
+      border: none;
+      padding: 0 18px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      background: linear-gradient(135deg,#22c55e,#16a34a);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .chat-send-btn[disabled] {
+      opacity: 0.6;
+      cursor: default;
+    }
+    .status {
+      font-size: 11px;
+      color: #9ca3af;
+      padding: 0 16px 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-wrapper">
+    <div class="chat-header">
+      <div class="chat-avatar">C</div>
+      <div class="chat-header-text">
+        <div class="chat-header-title">CosmoDance помощник</div>
+        <div class="chat-header-sub">Отвечаю на вопросы о студии и записях на занятия 💫</div>
+      </div>
+    </div>
+    <div id="messages" class="chat-messages"></div>
+    <div class="status" id="status"></div>
+    <form id="chat-form" class="chat-input-wrap">
+      <input
+        id="user-input"
+        class="chat-input"
+        type="text"
+        placeholder="Задайте вопрос о CosmoDance…"
+        autocomplete="off"
+      />
+      <button type="submit" id="send-btn" class="chat-send-btn">
+        Отправить
+      </button>
+    </form>
+  </div>
+
+  <script>
+    const API_URL = "https://cosmo-info.onrender.com/chat";
+
+    const form = document.getElementById("chat-form");
+    const input = document.getElementById("user-input");
+    const messages = document.getElementById("messages");
+    const statusEl = document.getElementById("status");
+    const sendBtn = document.getElementById("send-btn");
+
+    function addMessage(text, from) {
+      const div = document.createElement("div");
+      div.className = "msg " + (from === "user" ? "msg-user" : "msg-bot");
+      div.textContent = text;
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    // приветственное сообщение
+    addMessage(
+      "Здравствуйте! Я виртуальный ассистент студии CosmoDance. " +
+      "Могу помочь выбрать направление, подсказать расписание и адреса филиалов. " +
+      "Напишите, что вы хотите узнать 😊",
+      "bot"
+    );
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+
+      addMessage(text, "user");
+      input.value = "";
+      input.focus();
+
+      sendBtn.disabled = true;
+      statusEl.textContent = "Думаю над ответом…";
+
+      try {
+        const response = await fetch(API_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ userMessage: text })
+        });
+
+        if (!response.ok) {
+          throw new Error("Ошибка сервера: " + response.status);
+        }
+
+        const data = await response.json();
+        const reply = data.reply || "Извините, не удалось получить ответ.";
+        addMessage(reply, "bot");
+        statusEl.textContent = "";
+      } catch (err) {
+        console.error(err);
+        addMessage(
+          "Извините, сейчас у меня техническая пауза. " +
+          "Попробуйте задать вопрос ещё раз чуть позже или свяжитесь с администратором студии.",
+          "bot"
+        );
+        statusEl.textContent = "Техническая ошибка, см. консоль браузера.";
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
