@@ -14,7 +14,18 @@ dotenv.config();
 const app = express();
 app.use(cors());
 app.use(express.json());
+// Отдаём веб-страницу чата по корню /
+import { readFile } from "fs/promises";
 
+app.get("/", async (req, res) => {
+    try {
+        const html = await readFile(path.join(__dirname, "index.html"), "utf-8");
+        res.setHeader("Content-Type", "text/html; charset=utf-8");
+        res.send(html);
+    } catch (e) {
+        res.status(500).send("Ошибка загрузки страницы");
+    }
+});
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
