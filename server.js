@@ -1,6 +1,5 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import fs from "fs";
 
 import express from "express";
 import cors from "cors";
@@ -20,7 +19,15 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// --- карты для дней недели ---
+/**
+ * База знаний:
+ *  - KNOWLEDGE_FAQ  — ответы на типовые вопросы (из knowledge.json)
+ *  - SCHEDULE_DATA  — расписание всех филиалов (cosmo_schedule_all_branches_ready.json)
+ */
+let KNOWLEDGE_FAQ = null;
+let SCHEDULE_DATA = null;
+
+// Полные названия дней для вывода расписания
 const DAY_FULL = {
   "Пн": "Понедельник",
   "Вт": "Вторник",
@@ -32,89 +39,62 @@ const DAY_FULL = {
 };
 
 // ----- ГЛАВНАЯ СИСТЕМНАЯ ПОДСКАЗКА -----
-const SYSTEM_PROMPT_BASE = `
-Ты — дружелюбный ассистент студии танцев CosmoDance.
+const SYSTEM_PROMPT = `
+Ты — виртуальный ассистент студии танцев CosmoDance.
 
-Твоя задача:
-- помочь выбрать направление (для взрослого или ребёнка);
-- учесть возраст ребёнка и танцевальный опыт (новичок / есть опыт);
-- подобрать подходящую группу по расписанию, которое дано в базе;
-- подсказать адрес и контакты филиала;
-- рассказать про пробные занятия, абонементы, особенности обучения.
+ОБЩИЕ ПРАВИЛА
+- Отвечай только по теме студии: направления, филиалы, расписание, цены, пробные занятия,
+  абонементы, акции, правила студии, особенности обучения.
+- Если вопрос не относится к студии или к танцам, мягко перенаправляй:
+  "Я отвечаю только на вопросы о студии CosmoDance. Пожалуйста, задайте вопрос по студии."
+- Если нужен живой администратор, пиши:
+  "Пожалуйста, оставьте номер телефона, и администратор свяжется с вами."
+- Обращайся к пользователю на ВЫ, отвечай тепло, уверенно и простым человеческим языком.
 
-ВАЖНО:
-1. Отвечай ТОЛЬКО по теме студии CosmoDance.
-2. Пользователь может в ОДНОЙ фразе дать сразу несколько ответов:
-   пример: "5 лет звёздная", "девочка 7 лет, Дыбенко, только начинаем".
-   Ты обязан вытащить из фразы:
-   - возраст,
-   - филиал,
-   - есть ли танцевальный опыт (новичок или нет),
-   - для кого занятия (если понятно из контекста).
-   Если эти данные уже были названы ранее в диалоге, не спрашивай их снова.
-3. Групповые занятия проходят строго по расписанию групп.
-   Не предлагай "любое время": всегда опирайся на расписание.
-4. Индивидуальные занятия можно согласовать по времени с тренером.
-5. Если вопрос не относится к студии или к танцам — мягко перенаправь:
-   "Я отвечаю только на вопросы о студии CosmoDance. Пожалуйста, задайте вопрос по студии."
-6. Если нужно подключить администратора, пиши:
-   "Пожалуйста, оставьте номер телефона, и администратор свяжется с вами."
-7. Отвечай на ВЫ, тепло, уверенно, простым человеческим языком.
+ЛОГИКА ОБЩЕНИЯ С НОВЫМ КЛИЕНТОМ
+1) Сначала уточни:
+   - какой филиал удобнее посещать: Звёздная, Озерки, Дыбенко или Купчино;
+   - для кого занятия: для взрослого или для ребёнка.
+
+2) Если занятия для ребёнка, ОБЯЗАТЕЛЬНО уточни:
+   - возраст ребёнка;
+   - есть ли танцевальный опыт;
+   - что важнее для родителя: общее развитие, уверенность и раскрепощение,
+     выступления на сцене, участие в соревнованиях и т.п.
+
+3) Если ответ пришёл одной фразой сразу на несколько вопросов
+   (например: "5 лет Звёздная, только начинаем"):
+   - вытащи ВСЮ информацию из этой фразы (возраст, филиал, опыт);
+   - больше НЕ задавай те вопросы, на которые уже получен ответ.
+
+4) Для взрослых также уточняй танцевальный опыт и цели (для себя/фигура/выступления и т.п.).
+
+РАСПИСАНИЕ И ГРУППЫ
+- У тебя есть подробное расписание групп по филиалам.
+- Каждая группа жёстко привязана к своему расписанию.
+  Не предлагай время "в любое удобное", а подбирай конкретные группы по расписанию.
+- Обычно занятия 2 раза в неделю, иногда 3 — ориентируйся на данные из расписания.
+- В ответах ВСЕГДА пиши дни недели полностью: "Понедельник", "Вторник" и т.д.,
+  даже если в расписании они указаны как "Пн", "Вт" и т.п.
+- Сначала помоги выбрать НАПРАВЛЕНИЕ (например, хип-хоп, брейк-данс, джаз-фанк и т.п.),
+  затем предложи конкретные группы по расписанию (дни недели и время).
+- Группы, в названии которых есть "Команда", предназначены для учеников с опытом
+  и принимают по кастингу. Новичкам такие группы не предлагай, а объясняй, что сначала
+  нужно походить в начинающую группу.
+
+РАБОТА С БАЗОЙ ЗНАНИЙ
+- В базе знаний есть типовые вопросы и ответы по студии — используй их как основу.
+- Если в базе есть точный ответ — опирайся на него.
+- Если в базе нет точного ответа, но есть расписание и общая информация, —
+  подбирай ответ логично и честно, без выдумывания несуществующих филиалов или цен.
+
+ФОРМАТ ОТВЕТОВ
+- Пиши структурированно, короткими абзацами.
+- Если предлагаешь варианты групп, перечисляй их в виде списка:
+  • Филиал, направление, возраст/уровень,
+    дни недели (полностью) и время, преподаватель (если есть).
+- Не повторяй вопросы, на которые пользователь уже чётко ответил.
 `;
-
-// сюда будем складывать загруженную базу
-let KNOWLEDGE_BASE = null;         // текстовые Q&A
-let SCHEDULE_DATA = null;         // расписание всех филиалов
-let SCHEDULE_TEXT = "";           // готовый текст для подсказки
-
-function buildScheduleText(data) {
-  if (!data || !Array.isArray(data.groups) || data.groups.length === 0) {
-    return "";
-  }
-
-  const parts = [];
-  parts.push("\n\nНиже подробное расписание групп CosmoDance по филиалам. Используй это как источник правды для дней недели и времени занятий.\n");
-
-  for (const group of data.groups) {
-    const branch = group.branch || "Филиал";
-    const name = group.group_name || "Группа";
-    const teacher = group.teacher ? `, педагог: ${group.teacher}` : "";
-    const level = group.level ? `, уровень: ${group.level}` : "";
-    const isTeam = group.is_team ? " (команда, по отбору)" : "";
-
-    let scheduleStr = "";
-    if (group.schedule && typeof group.schedule === "object") {
-      const dayParts = [];
-      for (const [shortDay, time] of Object.entries(group.schedule)) {
-        if (!time) continue;
-        const fullDay = DAY_FULL[shortDay] || shortDay;
-        dayParts.push(`${fullDay}: ${time}`);
-      }
-      if (dayParts.length > 0) {
-        scheduleStr = " Расписание: " + dayParts.join("; ") + ".";
-      }
-    }
-
-    parts.push(
-      `Филиал: ${branch}. Группа: ${name}${level}${isTeam}${teacher}.${scheduleStr}`
-    );
-  }
-
-  return parts.join("\n");
-}
-
-// при запуске попробуем сразу прочитать расписание с диска (на случай, если оно лежит рядом)
-const schedulePath = path.join(__dirname, "cosmo_schedule_all_branches_ready.json");
-if (fs.existsSync(schedulePath)) {
-  try {
-    const raw = fs.readFileSync(schedulePath, "utf-8");
-    SCHEDULE_DATA = JSON.parse(raw);
-    SCHEDULE_TEXT = buildScheduleText(SCHEDULE_DATA);
-    console.log("Локальное расписание загружено, групп:", SCHEDULE_DATA.groups?.length ?? 0);
-  } catch (e) {
-    console.error("Не удалось прочитать локальное расписание:", e);
-  }
-}
 
 // ----- ОТДАТЬ ВЕБ-СТРАНИЦУ ЧАТА -----
 app.get("/", (req, res) => {
@@ -128,98 +108,122 @@ app.post("/upload", (req, res) => {
   try {
     const body = req.body;
     if (!body) {
-      return res.status(400).json({ status: "error", message: "Пустое тело запроса" });
+      return res
+        .status(400)
+        .json({ status: "error", message: "Пустое тело запроса" });
     }
 
-    // Вариант 1: пришёл объект { knowledge, schedule }
-    if (body.knowledge || body.schedule) {
-      KNOWLEDGE_BASE = body.knowledge || null;
-      SCHEDULE_DATA = body.schedule || SCHEDULE_DATA;
-    }
-    // Вариант 2: пришёл просто массив Q&A (старый формат)
-    else if (Array.isArray(body)) {
-      KNOWLEDGE_BASE = body;
-    } else {
-      KNOWLEDGE_BASE = body;
+    // ожидаем структуру { faq: ..., schedule: ... }
+    KNOWLEDGE_FAQ = body.faq ?? null;
+    SCHEDULE_DATA = body.schedule ?? null;
+
+    let faqCount = null;
+    if (Array.isArray(KNOWLEDGE_FAQ)) {
+      faqCount = KNOWLEDGE_FAQ.length;
     }
 
-    if (SCHEDULE_DATA) {
-      SCHEDULE_TEXT = buildScheduleText(SCHEDULE_DATA);
+    let scheduleCount = null;
+    if (Array.isArray(SCHEDULE_DATA)) {
+      scheduleCount = SCHEDULE_DATA.length;
+    } else if (SCHEDULE_DATA && SCHEDULE_DATA.groups) {
+      scheduleCount = SCHEDULE_DATA.groups.length;
+      SCHEDULE_DATA = SCHEDULE_DATA.groups;
     }
 
-    let countKnowledge = null;
-    if (Array.isArray(KNOWLEDGE_BASE)) {
-      countKnowledge = KNOWLEDGE_BASE.length;
-    } else if (KNOWLEDGE_BASE?.items && Array.isArray(KNOWLEDGE_BASE.items)) {
-      countKnowledge = KNOWLEDGE_BASE.items.length;
-    }
-
-    let countSchedule = null;
-    if (SCHEDULE_DATA?.groups && Array.isArray(SCHEDULE_DATA.groups)) {
-      countSchedule = SCHEDULE_DATA.groups.length;
-    }
-
-    console.log("База знаний обновлена. Q&A:", countKnowledge ?? "?", "групп по расписанию:", countSchedule ?? "?");
+    console.log(
+      "База знаний обновлена. FAQ:",
+      faqCount ?? "нет",
+      "групп в расписании:",
+      scheduleCount ?? "нет"
+    );
 
     res.json({
       status: "ok",
       message: "База принята на сервере",
-      countKnowledge,
-      countSchedule,
+      faqCount,
+      scheduleCount,
     });
   } catch (e) {
     console.error("Ошибка в /upload:", e);
-    res.status(500).json({ status: "error", message: "Ошибка при загрузке базы" });
+    res
+      .status(500)
+      .json({ status: "error", message: "Ошибка при загрузке базы" });
   }
 });
 
 // ----- ОСНОВНОЙ ЧАТ -----
 app.post("/chat", async (req, res) => {
   try {
-    const { messages } = req.body || {};
+    const { userMessage } = req.body || {};
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    if (!userMessage || typeof userMessage !== "string") {
       return res.status(400).json({
         reply: "Пожалуйста, напишите ваш вопрос.",
       });
     }
 
-    // превращаем базу Q&A в текстовый контекст для модели
+    // ---- ТЕКСТ ИЗ FAQ ----
     let knowledgeText = "";
-    if (KNOWLEDGE_BASE) {
-      let items = [];
-      if (Array.isArray(KNOWLEDGE_BASE)) {
-        items = KNOWLEDGE_BASE;
-      } else if (KNOWLEDGE_BASE.items && Array.isArray(KNOWLEDGE_BASE.items)) {
-        items = KNOWLEDGE_BASE.items;
-      }
-
+    if (KNOWLEDGE_FAQ) {
+      const items = Array.isArray(KNOWLEDGE_FAQ)
+        ? KNOWLEDGE_FAQ
+        : KNOWLEDGE_FAQ.items || [];
       if (items.length > 0) {
         knowledgeText =
-          "\n\nВот база знаний CosmoDance (вопросы и ответы, используй их как источник достоверной информации):\n" +
+          "\n\nВот база вопросов и ответов по студии CosmoDance (используй их максимально точно):\n" +
           items
             .map(
               (item, i) =>
-                `Q${i + 1}: ${item.question || item.q || ""}\nA${i + 1}: ${item.answer || item.a || ""}`
+                `Q${i + 1}: ${item.question || item.q || ""}\nA${
+                  i + 1
+                }: ${item.answer || item.a || ""}`
             )
             .join("\n\n");
       }
     }
 
-    const systemContent = SYSTEM_PROMPT_BASE + knowledgeText + SCHEDULE_TEXT;
+    // ---- ТЕКСТ ИЗ РАСПИСАНИЯ ----
+    let scheduleText = "";
+    if (SCHEDULE_DATA && Array.isArray(SCHEDULE_DATA) && SCHEDULE_DATA.length) {
+      const lines = SCHEDULE_DATA.map((g, i) => {
+        const branch = g.branch || "";
+        const name = g.group_name || g.name || "";
+        const teacher = g.teacher || "";
+        const level = g.level || "";
+        const isTeam = g.is_team ? " (команда, по кастингу)" : "";
+        const schedule = g.schedule || {};
 
-    const openaiMessages = [
-      { role: "system", content: systemContent },
-      ...messages.map((m) => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: String(m.content || ""),
-      })),
-    ];
+        const times = Object.entries(schedule)
+          .filter(([_, time]) => time && String(time).trim() !== "" && time !== "-")
+          .map(([shortDay, time]) => {
+            const fullDay = DAY_FULL[shortDay] || shortDay;
+            return `${fullDay}: ${time}`;
+          })
+          .join("; ");
+
+        return `Группа ${i + 1}.
+Филиал: ${branch}.
+Направление/группа: ${name}${isTeam}.
+Уровень: ${level || "не указан"}.
+Преподаватель: ${teacher || "не указан"}.
+Расписание: ${times || "нет данных"}.`;
+      });
+
+      scheduleText =
+        "\n\nВот подробное расписание групп CosmoDance по филиалам. Используй его, чтобы подбирать конкретные группы и времена занятий:\n\n" +
+        lines.join("\n\n");
+    }
 
     const completion = await client.chat.completions.create({
       model: "gpt-4.1-mini",
-      messages: openaiMessages,
-      temperature: 0.5,
+      messages: [
+        {
+          role: "system",
+          content: SYSTEM_PROMPT + knowledgeText + scheduleText,
+        },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.6,
       max_tokens: 700,
     });
 
