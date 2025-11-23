@@ -1,127 +1,265 @@
+// server.js — ВАРИАНТ B, GPT-5.1, без зацикливаний
+
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import path from "path";
-import { fileURLToPath } from "url";
 import OpenAI from "openai";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
-// ---------------- DIR ----------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---------------- API CLIENT ----------------
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: "2mb" }));
+
+// ---------- OpenAI клиент ----------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ---------------- SERVER ----------------
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+// ---------- Загрузка базы знаний и расписания из файлов ----------
+// Ожидаем, что файлы лежат рядом с server.js:
+//   cosmo-knowledge-full.json
+//   cosmo_schedule_all_branches_ready.json
 
-// ----------------------------------
-// ======== Память сессий =========
-// ----------------------------------
-/**
- * ВОТ ЭТО ИСПРАВЛЯЕТ ЗАЦИКЛИВАНИЕ.
- * У каждой беседы свой CONTEXT
- */
-const SESSIONS = {};
-const SESSION_TIMEOUT = 10 * 60 * 1000; // 10 минут
-
-function getSession(id) {
-  if (!SESSIONS[id]) {
-    SESSIONS[id] = { history: [], last: Date.now() };
-  }
-  return SESSIONS[id];
-}
-
-function clearOldSessions() {
-  const now = Date.now();
-  for (const id in SESSIONS) {
-    if (now - SESSIONS[id].last > SESSION_TIMEOUT) {
-      delete SESSIONS[id];
-    }
-  }
-}
-setInterval(clearOldSessions, 60 * 1000);
-
-// ---------------- БАЗА ----------------
 let KNOWLEDGE = null;
+let SCHEDULE = null;
 
-app.post("/upload", (req, res) => {
-  KNOWLEDGE = req.body;
-  console.log("База обновлена", Array.isArray(KNOWLEDGE) ? KNOWLEDGE.length : 0);
-  res.json({ status: "ok" });
+function safeLoadJSON(relativePath, label) {
+  try {
+    const fullPath = path.join(__dirname, relativePath);
+    if (!fs.existsSync(fullPath)) {
+      console.warn(`[${label}] Файл не найден:`, fullPath);
+      return null;
+    }
+    const text = fs.readFileSync(fullPath, "utf8");
+    const data = JSON.parse(text);
+    console.log(`[${label}] успешно загружен`);
+    return data;
+  } catch (e) {
+    console.error(`[${label}] Ошибка загрузки:`, e);
+    return null;
+  }
+}
+
+KNOWLEDGE = safeLoadJSON("cosmo-knowledge-full.json", "KNOWLEDGE");
+SCHEDULE = safeLoadJSON("cosmo_schedule_all_branches_ready.json", "SCHEDULE");
+
+// ---------- Вспомогательные функции ----------
+
+const DAY_FULL = {
+  "Пн": "понедельник",
+  "Вт": "вторник",
+  "Ср": "среда",
+  "Чт": "четверг",
+  "Пт": "пятница",
+  "Сб": "суббота",
+  "Вс": "воскресенье",
+};
+
+function buildScheduleText() {
+  if (!SCHEDULE || !Array.isArray(SCHEDULE.groups)) return "";
+
+  const lines = SCHEDULE.groups.map((g) => {
+    const branch = g.branch || "Филиал";
+    const groupName = g.group_name || "Группа";
+    const teacher = g.teacher || "преподаватель уточняется";
+    const level = g.level || "уровень по расписанию";
+
+    const times = Object.entries(g.schedule || {})
+      .filter(([_, v]) => v && String(v).trim() !== "")
+      .map(([shortDay, time]) => {
+        const fullDay = DAY_FULL[shortDay] || shortDay;
+        return `${fullDay}: ${time}`;
+      });
+
+    const scheduleStr =
+      times.length > 0
+        ? times.join(", ")
+        : "расписание уточняется у администратора";
+
+    return `Филиал: ${branch}. Группа: ${groupName}. Преподаватель: ${teacher}. Уровень: ${level}. Расписание: ${scheduleStr}.`;
+  });
+
+  return (
+    "### Расписание групп студии CosmoDance по филиалам:\n" +
+    lines.join("\n")
+  );
+}
+
+function buildKnowledgeText() {
+  if (!KNOWLEDGE || !Array.isArray(KNOWLEDGE.docs)) return "";
+  const parts = KNOWLEDGE.docs.map(
+    (d) => `### ${d.title}\n${d.text}`
+  );
+  return parts.join("\n\n");
+}
+
+const STATIC_CONTEXT = `${buildKnowledgeText()}\n\n${buildScheduleText()}`;
+
+// ---------- Системная подсказка (логика бота) ----------
+
+const SYSTEM_PROMPT = `
+Ты — умный и доброжелательный ассистент студии танцев CosmoDance в Санкт-Петербурге.
+
+ОБЩИЕ ПРАВИЛА:
+• Отвечай строго по теме студии: направления, филиалы, расписание, цены, абонементы, пробные занятия, выступления и т.п.
+• Если вопрос не про студию и не про танцы — мягко возвращай к теме: 
+  "Я могу отвечать только на вопросы о студии танцев CosmoDance и занятиях. Пожалуйста, задайте вопрос по студии."
+• Всегда обращайся к человеку на "вы".
+• Пиши простым человеческим языком, короткими абзацами, без канцелярита.
+• В ответах старайся поддержать и успокоить человека, особенно новичков и родителей.
+• Если чего-то нет в базе (точный процент скидки, спорные вопросы по оплате и т.п.) — не выдумывай. 
+  Напиши, что это лучше уточнить у администратора, и предложи оставить номер телефона.
+
+РАБОТА С ДЕТЬМИ:
+• Если речь о ребёнке — уточняй возраст и есть ли танцевальный опыт.
+• Можно аккуратно спросить: "Скажите, пожалуйста, сколько лет ребёнку и занимался ли он раньше танцами?"
+• Не спрашивай родителей "что для вас важнее: развитие, сцена, соревнования" — эту связку не используем.
+• Рассказывая о детских группах, упоминай:
+  – нашу открытость (мониторы в зоне ожидания, трансляция занятий),
+  – дневник танцора (отметки педагога, этапы, подарки),
+  – возможность выступать на большой сцене на отчётном концерте.
+
+РАБОТА СО ВЗРОСЛЫМИ:
+• Сначала выясни, для себя ли человек ищет занятия или для ребёнка.
+• Если для себя — уточни, есть ли опыт и что хочется получить (пластика, уверенность, активность, парные танцы и т.д.).
+• Если возраст взрослого очень большой (60–70+), не предлагай откровенно молодёжные стили 
+  вроде стрит-направлений, стрип/heels, агрессивного хип-хопа. Лучше предложи мягкие и комфортные стили 
+  (зумба, латиноамериканские танцы, более спокойные группы).
+
+РАБОТА С РАСПИСАНИЕМ:
+• В расписании группы привязаны к конкретным дням и времени — человек НЕ может "выбрать любое время".
+• Всегда опирайся на уже существующие группы из расписания.
+• Сначала определяем направление и филиал, потом предлагаем конкретные группы по расписанию.
+• Группы "команда" — только для учеников с опытом и по кастингу. Новичкам их не предлагай.
+• Новичкам предлагай группы с пометками "начинающие" (и аналогичные по смыслу).
+• Всегда пиши дни недели клиенту полностью: "понедельник, вторник, среда, четверг, пятница, суббота, воскресенье".
+  Даже если в исходном расписании сокращения "Пн", "Вт" и т.п.
+• Расписание индивидуальных занятий:
+  – время индивидуального урока подбирается с педагогом,
+  – сначала направление и филиал, потом контакт, потом согласование времени.
+
+АНАЛИЗ КРАТКИХ ОТВЕТОВ:
+• Внимательно анализируй короткие фразы, например: "5 звездное", "звёздное 5 лет", "Звездная 7".
+  Такие ответы могут одновременно содержать и возраст ребёнка, и филиал.
+• Если ты уже получил ответ на вопрос (возраст, филиал и т.п.), не задавай этот же вопрос повторно.
+• Считай, что регистр, буква "ё"/"е" и мелкие опечатки не важны — понимай смысл по контексту.
+
+ПОВЕДЕНИЕ ПРИ НЕПОНЯТНЫХ ВОПРОСАХ:
+• Сначала попробуй логически разобраться и переформулировать ответ, опираясь на базу знаний и расписание.
+• Если всё равно не получается — честно напиши:
+  "Похоже, в мою базу ещё не добавили точный ответ на этот вопрос. Попробуйте, пожалуйста, переформулировать 
+  или уточните у администратора студии."
+• Не пиши "техническая пауза", если нет реальной ошибки сервера.
+
+РАЗГОВОР:
+• Ты всегда видишь историю диалога (предыдущие реплики) и должен учитывать её.
+• Не задавай одни и те же вопросы несколько раз, если ответы уже были даны в ходе диалога.
+• Отвечай так, чтобы человеку было психологически комфортно: 
+  – если он переживает, что "все будут 16 лет, а мне 40" — объясни, что в группах часто разный возраст, 
+    что многие приходят с нуля и педагог помогает мягко влиться.
+  – если человек боится, что группа давно занимается — объясни, что программы построены так, 
+    чтобы можно было присоединиться в процессе, а педагог подстраивается и помогает догнать.
+
+ИТОГ:
+• Твоя цель — помочь человеку выбрать филиал, направление и конкретную группу по расписанию, 
+  снять страхи и при необходимости подвести к записи на пробное занятие.
+`;
+
+// ---------- Раздача статики (index.html и т.п.) ----------
+
+app.use(express.static(__dirname));
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"), {
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
 });
 
-// ----------------------------------
-// ========= ЧАТ ====================
-// ----------------------------------
+// ---------- Чат-эндпоинт ----------
+
 app.post("/chat", async (req, res) => {
   try {
-    const { userId, message } = req.body;
+    const { message, history } = req.body || {};
 
-    if (!userId) return res.status(400).json({ reply: "userId обязателен" });
-    if (!message) return res.status(400).json({ reply: "Пустое сообщение" });
-
-    const session = getSession(userId);
-    session.last = Date.now();
-
-    let context = "";
-
-    if (KNOWLEDGE) {
-      context = "Это база студии CosmoDance. Используй её как истину:\n";
-      KNOWLEDGE.groups?.forEach((g, i) => {
-        context += `#${i + 1} ${g.branch} — ${g.group_name} — ${g.schedule ? JSON.stringify(g.schedule) : ""}\n`;
+    const userMessage = typeof message === "string" ? message.trim() : "";
+    if (!userMessage) {
+      return res.status(400).json({
+        reply: "Пожалуйста, напишите ваш вопрос о студии CosmoDance.",
       });
     }
 
-    session.history.push({ role: "user", content: message });
+    // history приходит с фронта — массив { role, content }
+    const safeHistory = Array.isArray(history)
+      ? history
+          .filter(
+            (m) =>
+              m &&
+              typeof m.role === "string" &&
+              typeof m.content === "string" &&
+              m.content.trim() !== ""
+          )
+          .map((m) => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content.trim(),
+          }))
+      : [];
 
-    const completion = await client.responses.create({
-      model: "gpt-5.1", // ← ВАЖНО!!!
-      input: [
-        {
-          role: "system",
-          content: `
-Ты — ассистент студии CosmoDance.
-Отвечай как живой человек.
-Ты обязан учитывать контекст беседы.
-Исправляй ошибки в тексте пользователя.
-Запоминай возраст, филиал, направление.
-Никогда не задавай один и тот же вопрос дважды.
-Если информация уже есть — используй её.
-Не предлагай администратора без причины.
-Если группа: не спрашивай утро/вечер — дай расписание.
-Если пользователь >60 — предлагай латино / зумба.
-Если это детские — спрашивай возраст, не строго.
-`
-        },
-        { role: "system", content: context },
-        ...session.history,
-      ],
+    // собираем сообщения для модели:
+    const messages = [
+      {
+        role: "system",
+        content: SYSTEM_PROMPT,
+      },
+      {
+        role: "system",
+        content:
+          "Ниже представлена база знаний и расписание студии CosmoDance. Используй её максимально точно, " +
+          "когда отвечаешь на вопросы о студии, филиалах, направлениях и группах:\n\n" +
+          STATIC_CONTEXT,
+      },
+      // вся история диалога
+      ...safeHistory,
+      // текущее сообщение пользователя
+      {
+        role: "user",
+        content: userMessage,
+      },
+    ];
+
+    const completion = await client.chat.completions.create({
+      model: "gpt-5.1",
+      messages,
+      temperature: 0.5,
+      max_tokens: 900,
     });
 
-    const reply = completion.output_text.trim();
-    session.history.push({ role: "assistant", content: reply });
+    const reply =
+      completion.choices?.[0]?.message?.content?.trim() ||
+      "Извините, у меня не получилось сформировать ответ. Попробуйте переформулировать вопрос или уточните у администратора студии.";
 
     res.json({ reply });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ reply: "Техническая пауза. Попробуйте ещё раз." });
+  } catch (error) {
+    console.error("Ошибка в /chat:", error);
+    res.status(500).json({
+      reply:
+        "Извините, сейчас у меня техническая пауза на стороне сервера. Попробуйте задать вопрос чуть позже или свяжитесь с администратором студии.",
+    });
   }
 });
 
-// ----------------------------------
-// ========= САЙТ ====================
-// ----------------------------------
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+// простой health-check для Render
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("SERVER START", PORT));
+const port = process.env.PORT || 10000;
+app.listen(port, () => {
+  console.log(`CosmoDance server listening on port ${port}`);
+});
