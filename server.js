@@ -1,351 +1,306 @@
-// server.mjs
-// Полный сервер для CosmoDance: чат + загрузка базы + использование расписания
-
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs/promises";
 
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import OpenAI from "openai";
-import fs from "fs";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
+// --- служебные пути ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// --- инициализация ---
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" })); // принимаем JSON до 2 МБ
 
-const client = new OpenAI({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// --------- ЗАГРУЗКА БАЗЫ ЗНАНИЙ И РАСПИСАНИЯ ИЗ JSON-ФАЙЛОВ ----------
+// ===== ЗАГРУЗКА ЛОКАЛЬНЫХ ФАЙЛОВ =====
 
-let KNOWLEDGE_TEXT = "";
-let SCHEDULE = null;
-let SCHEDULE_TEXT = "";
+let KNOWLEDGE_BASE = null;               // вопросы-ответы
+let SCHEDULE = null;                     // расписание всех филиалов
 
-// читаем cosmo-knowledge-full.json (если есть)
-try {
-  const kbRaw = fs.readFileSync(
-    path.join(__dirname, "cosmo-knowledge-full.json"),
-    "utf-8"
-  );
-  const kb = JSON.parse(kbRaw);
-  if (kb.docs && Array.isArray(kb.docs)) {
-    KNOWLEDGE_TEXT =
-      "\n\nБаза знаний CosmoDance (внутренняя информация, используй её ТОЛЬКО для ответов о студии):\n" +
-      kb.docs
-        .map(
-          (doc) =>
-            `# ${doc.title || ""}\n` +
-            `${typeof doc.text === "string" ? doc.text : ""}`
-        )
-        .join("\n\n");
-    console.log("База знаний загружена из cosmo-knowledge-full.json");
-  } else {
-    console.log(
-      "cosmo-knowledge-full.json найден, но структура docs не распознана"
-    );
+async function loadJsonSafe(filePath) {
+  try {
+    const full = path.join(__dirname, filePath);
+    const data = await fs.readFile(full, "utf8");
+    return JSON.parse(data);
+  } catch (e) {
+    console.warn(`Не удалось загрузить ${filePath}:`, e.message);
+    return null;
   }
-} catch (e) {
-  console.log(
-    "Не удалось прочитать cosmo-knowledge-full.json (это не ошибка, просто файл не найден или пустой):",
-    e.message
-  );
 }
 
-// читаем cosmo_schedule_all_branches_ready.json (если есть)
-try {
-  const schedRaw = fs.readFileSync(
-    path.join(__dirname, "cosmo_schedule_all_branches_ready.json"),
-    "utf-8"
+async function loadAllData() {
+  KNOWLEDGE_BASE = await loadJsonSafe("knowledge.json");
+  // файл с расписанием всех 4 филиалов, который мы складывали в папку бота
+  SCHEDULE = await loadJsonSafe("cosmo_schedule_all_branches_ready.json");
+  console.log("Данные загружены:", {
+    knowledge: KNOWLEDGE_BASE ? "OK" : "нет",
+    schedule: SCHEDULE ? "OK" : "нет",
+  });
+}
+
+await loadAllData();
+
+// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+
+const FULL_DAY = {
+  "Пн": "понедельник",
+  "Вт": "вторник",
+  "Ср": "среду",
+  "Чт": "четверг",
+  "Пт": "пятницу",
+  "Сб": "субботу",
+  "Вс": "воскресенье",
+};
+
+function buildScheduleText() {
+  if (!SCHEDULE || !Array.isArray(SCHEDULE.groups)) return "";
+
+  const lines = [];
+  lines.push(
+    "Вот подробное расписание групп студии CosmoDance по филиалам. " +
+      "Строго придерживайся его при ответах и ничего не придумывай."
   );
-  SCHEDULE = JSON.parse(schedRaw);
 
-  if (SCHEDULE && Array.isArray(SCHEDULE.groups)) {
-    // Делаем человекочитаемый текст расписания
-    const lines = [];
-    for (const g of SCHEDULE.groups) {
-      const branch = g.branch || "Филиал";
-      const name = g.group_name || "Группа";
-      const teacher = g.teacher ? `, педагог: ${g.teacher}` : "";
-      const level = g.level ? `, уровень: ${g.level}` : "";
-      const sched = g.schedule || {};
-      const daysParts = [];
-      const dayMap = {
-        Пн: "понедельник",
-        Вт: "вторник",
-        Ср: "среду",
-        Чт: "четверг",
-        Пт: "пятницу",
-        Сб: "субботу",
-        Вс: "воскресенье",
-      };
-
-      for (const shortDay of Object.keys(dayMap)) {
-        const val = sched[shortDay];
-        if (val) {
-          daysParts.push(`${dayMap[shortDay]}: ${val}`);
-        }
+  for (const g of SCHEDULE.groups) {
+    const scheduleParts = [];
+    if (g.schedule) {
+      for (const [shortDay, time] of Object.entries(g.schedule)) {
+        if (!time) continue;
+        const fullDay = FULL_DAY[shortDay] || shortDay;
+        scheduleParts.push(`${fullDay}: ${time}`);
       }
-
-      const daysText =
-        daysParts.length > 0
-          ? " (занятия: " + daysParts.join("; ") + ")"
-          : "";
-
-      lines.push(
-        `Филиал: ${branch}. Группа: ${name}${teacher}${level}${daysText}.`
-      );
     }
 
-    SCHEDULE_TEXT =
-      "\n\nРасписание групп CosmoDance по филиалам (используй только по запросу клиента, не придумывай своё расписание):\n" +
-      lines.join("\n");
-    console.log(
-      "Расписание загружено из cosmo_schedule_all_branches_ready.json"
-    );
-  } else {
-    console.log(
-      "cosmo_schedule_all_branches_ready.json прочитан, но структура groups не распознана"
-    );
+    const line = [
+      `Филиал: ${g.branch}`,
+      `Группа: ${g.group_name}`,
+      g.level ? `Уровень: ${g.level}` : null,
+      g.teacher ? `Педагог: ${g.teacher}` : null,
+      scheduleParts.length ? `Расписание: ${scheduleParts.join("; ")}` : null,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+
+    lines.push(line);
   }
-} catch (e) {
-  console.log(
-    "Не удалось прочитать cosmo_schedule_all_branches_ready.json (это не критично):",
-    e.message
-  );
+
+  return "\n\n" + lines.join("\n");
 }
 
-// ----- ГЛАВНАЯ СИСТЕМНАЯ ПОДСКАЗКА -----
+// ===== ГЛАВНАЯ СИСТЕМНАЯ ПОДСКАЗКА ДЛЯ МОДЕЛИ =====
 
 const SYSTEM_PROMPT = `
-Ты — дружелюбный ассистент студии танцев CosmoDance в Санкт-Петербурге.
+Ты — дружелюбный и внимательный ассистент студии танцев CosmoDance.
 
-ТВОЯ ЗАДАЧА:
-• Помогать взрослым и родителям детей разобраться с направлениями, филиалами, расписанием, абонементами.
-• Всегда отвечать в рамках студии CosmoDance.
-• Отвечать ТОЛЬКО на темы: студия, направления, группы, расписание, цены, абонементы, пробные занятия, концерты, правила студии, условия посещения.
-• Всегда обращаться к человеку на «Вы».
+Главные правила:
 
-ЕСЛИ ВОПРОС НЕ ПРО СТУДИЮ:
-• Мягко перенаправляй: «Я отвечаю только на вопросы о студии танцев CosmoDance — направления, расписание, абонементы и запись на занятия. Пожалуйста, задайте вопрос по студии.»
+1) Отвечай ТОЛЬКО по теме студии: филиалы, направления, возрастные группы, расписание, абонементы, пробные занятия, правила студии.
+   Если вопрос не по теме — мягко отвечай:
+   "Я отвечаю только на вопросы о студии CosmoDance. Пожалуйста, задайте вопрос по студии."
 
-СТИЛЬ:
-• Добрый, спокойный, уверенный тон.
-• Пиши простым человеческим языком, короткими абзацами.
-• Не перегружай текст лишней информацией, но давай человеку ощущение, что его понимают.
-• Не повторяй один и тот же вопрос, если человек уже дал на него понятный ответ. 
-  Например, если человек написал «5 лет Звездная» — считай, что это возраст ребёнка 5 лет и филиал «Звёздная».
-• Воспринимай разные написания филиалов: 
-  «звезда», «звездая», «звёздная», «звездная», «звездна» — это филиал «Звёздная»;
-  «дыбен», «дыбенка» — это «Дыбенко»;
-  «купч», «купчино» — это «Купчино»;
-  «озер», «озёрки», «озерки» — это «Озерки».
+2) Всегда учитывай уже полученные ответы пользователя в диалоге.
+   НЕЛЬЗЯ задавать один и тот же вопрос дважды, если информация уже уточнена ранее.
+   Например:
+   - если человек уже указал филиал (Звёздная / Звездная / ЗВЕЗДНОЙ / озерки / купчино / дыбенко и любые близкие варианты),
+     больше не спрашивай заново "какой филиал удобнее".
+   - если человек написал "5 лет звёздная" или "5 лет, Звездная", ты ДОЛЖЕН понять:
+        возраст ребёнка = 5 лет,
+        филиал = Звёздная.
+   Аналогично обрабатывай ответы "ребёнок", "для ребёнка", "для себя", "я новичок", "только начинаем" и т.п.
 
-РАБОТА С ОТВЕТАМИ ПОЛЬЗОВАТЕЛЯ:
-• Всегда анализируй всю предыдущую переписку (историю сообщений), которую тебе передали.
-• Если человек уже назвал филиал, возраст ребёнка, направление и т.п., НЕ СПРАШИВАЙ это ещё раз.
-• Старайся понимать ответы, даже если они в одном предложении: «5 лет звездная, хочу для девочки танцы» 
-  — здесь есть возраст, филиал и пожелание по полу ребёнка.
-• Если информации не хватает (например, неизвестен филиал), задавай 1–2 уточняющих вопроса, но не задавай лишние вопросы.
+3) Работай с расписанием строго по базе, которую я тебе передам отдельно (текст с расписанием).
+   - Групповые занятия проходят по фиксированному расписанию, время нельзя выбирать произвольно.
+   - Показывай дни недели ПОЛНОСТЬЮ: "понедельник", "вторник" и т.д., без сокращений.
+   - Время занятий показывай так, как оно есть в базе (например, "19:00–20:00").
 
-РАСПИСАНИЕ:
-• Групповые занятия проходят по фиксированному расписанию групп.
-• Человек НЕ может выбрать любое время — он выбирает группу, у которой уже есть конкретные дни и время.
-• Можно объяснить: «занятия проходят по определённым дням и в определённое время, по расписанию группы».
-• Не употребляй слово «строго» в этом контексте.
-• Индивидуальные занятия — по договорённости с педагогом (обычно до 17:00, но это можно оставить общо: «по согласованию с педагогом»).
+4) Логика подбора:
+   - сначала уточни: для кого занятия (взрослый / ребёнок) и возраст;
+   - потом филиал (если он ещё не известен);
+   - потом интересы: новичок / есть опыт, какие задачи (поддержать форму, пластика, выступления, соревнования и т.п.);
+   - затем предложи несколько подходящих направлений ИЗ РАСПИСАНИЯ для выбранного филиала и возраста.
+     Для новичков предлагай группы с формулировками "начинающие", "с нуля" и т.п.
+   - если возраст 60+ — не предлагай откровенно молодёжные стили вроде стрип-пластики, high heels, жёсткого хип-хопа;
+     мягко ориентируй на зумбу, латину, танцевальный фитнес и т.п.
 
-ФИЛИАЛЫ:
-• Филиалы: Дыбенко, Звёздная, Купчино, Озерки.
-• Если человек не указал филиал, вежливо спроси, к какому филиалу ему удобнее добираться.
-  Используй формулировку: «Подскажите, пожалуйста, какой филиал вам удобнее посещать: Дыбенко, Звёздная, Купчино или Озерки?»
+5) Психология и поддержка:
+   - если человек переживает, что "там все по 16, а мне 40", объясни, что в группе обычно разный возраст,
+     новичок может присоединиться в любой момент, программа адаптируется под уровень,
+     хореограф поможет и уделит внимание.
+   - если человек переживает, что "я новичок, а группа уже давно занимается",
+     успокой, что можно присоединиться, объясни, как это устроено.
 
-ДЕТИ / РОДИТЕЛИ:
-• Если вопрос про ребёнка, уточни при необходимости:
-  – возраст ребёнка;
-  – есть ли танцевальный опыт (можно в одном вопросе: «Скажите, пожалуйста, сколько лет ребёнку и есть ли у него танцевальный опыт?»).
-• Не задавай лишние вопросы вроде «что для вас важнее: общее развитие, соревнования или сцена» — этот блок НЕ ИСПОЛЬЗУЕМ.
-• Важно подчеркнуть:
-  – открытость студии (мониторы в зоне ожидания, где родитель видит весь урок);
-  – «дневник танцора» и мотивацию ребёнка;
-  – возможность выступать на большой сцене (отчётный концерт в конце сезона).
+6) Пробное занятие и заявка:
+   - когда человек уже определился с филиалом, направлением и удобной группой (конкретные дни и время),
+     СТРУКТУРНО уточни:
+       • имя и фамилию,
+       • номер телефона,
+       • филиал,
+       • направление,
+       • конкретную группу (дни недели + время).
+   - затем коротко подтвердись, что заявка принята, и скажи:
+     "Вам напишет администратор студии в рабочее время для подтверждения записи."
 
-ВЗРОСЛЫЕ НОВИЧКИ:
-• Если взрослый боится, что он «слишком старый» или «совсем с нуля»:
-  – объясни, что танцевать можно начать в любом возрасте;
-  – многие приходят без опыта, это нормально;
-  – программа построена так, чтобы можно было присоединиться к группе и постепенно влиться.
-• Если человек спрашивает: «а вдруг там все 16 лет, а мне 40?»:
-  – успокой: «в группах обычно разный возраст, важно желание заниматься»;
-  – предложи прийти на пробное занятие, чтобы увидеть группу, педагога и атмосферу.
+7) Если вопрос сложный или не совсем понятный — сначала попробуй ЛОГИЧНО ответить,
+   используя всю базу знаний и расписание. Только если совсем не выходит, используй фразу:
+   "Мне не хватает данных, чтобы точно ответить на этот вопрос. Попробуйте переформулировать или задать его администратору студии."
 
-ВОЗРАСТ И НАПРАВЛЕНИЯ:
-• Если возраст взрослого до примерно 60 лет — можно предлагать любые подходящие взрослые направления из расписания.
-• Если возраст сильно старше (например, больше 60–70), лучше предлагать мягкие направления (зумба, латина, более щадящие по нагрузке) 
-  и не предлагать откровенно «молодёжные» форматы, как стрип, high heels и т.п., если человек сам это не просит.
-
-ОТВЕТЫ, КОГДА СЛОЖНЫЙ ВОПРОС:
-• Если вопрос понятен — отвечай по делу, не уходи в «техническую паузу».
-• Если ты НЕ находишь ответа в базе, лучше так:
-  «Честно скажу, у меня нет точного ответа на этот вопрос в моей базе. Попробуйте, пожалуйста, переформулировать вопрос 
-  или уточнить его. Если хотите, я могу подсказать общий принцип и далее предложить связаться с администратором.»
-• Если уже совсем нельзя помочь — можно предложить: «лучше всего это уточнить у администратора студии».
-
-САМОПРОВЕРКА:
-• Всегда проверяй себя: не повторяешь ли ты один и тот же вопрос, не противоречишь ли тому, что уже известно из истории.
-• Всегда помни, что твоя цель — не просто дать справку, а помочь человеку почувствовать себя увереннее и приблизить его к пробному занятию.
+Всегда отвечай на ВЫ, дружелюбно, простым живым языком.
 `;
 
-// сюда будем складывать *дополнительно загруженную* базу (через /upload), если она будет
-let KNOWLEDGE_BASE_RAW = null;
+// ===== ОТДАТЬ ВЕБ-СТРАНИЦУ ЧАТА =====
 
-// ----- ОТДАТЬ ВЕБ-СТРАНИЦУ ЧАТА -----
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"), {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 });
 
-// ----- ПРИНЯТЬ БАЗУ ЗНАНИЙ ОТ upload.js (опционально) -----
-app.post("/upload", (req, res) => {
+// ===== ПРИЁМ ЗАГРУЗКИ БАЗЫ (если нужно перезалить knowledge.json / расписание) =====
+
+app.post("/upload", async (req, res) => {
   try {
     const body = req.body;
     if (!body) {
-      return res
-        .status(400)
-        .json({ status: "error", message: "Пустое тело запроса" });
+      return res.status(400).json({ status: "error", message: "Пустое тело запроса" });
     }
 
-    KNOWLEDGE_BASE_RAW = body;
-    console.log("Принята дополнительная база знаний через /upload");
-    res.json({
-      status: "ok",
-      message: "Дополнительная база принята на сервере",
-    });
+    // Просто сохраняем как knowledge.json — при необходимости можно расширить протокол
+    const outPath = path.join(__dirname, "knowledge.json");
+    await fs.writeFile(outPath, JSON.stringify(body, null, 2), "utf8");
+
+    KNOWLEDGE_BASE = body;
+    console.log("База знаний обновлена через /upload");
+    res.json({ status: "ok", message: "База принята и сохранена на сервере" });
   } catch (e) {
     console.error("Ошибка в /upload:", e);
-    res
-      .status(500)
-      .json({ status: "error", message: "Ошибка при загрузке базы" });
+    res.status(500).json({ status: "error", message: "Ошибка при загрузке базы" });
   }
 });
 
-// Вспомогательная функция: собираем текст базы для модели
-function buildKnowledgeTextForModel() {
-  let extra = "";
+// ===== ОСНОВНОЙ ЧАТ =====
 
-  if (KNOWLEDGE_BASE_RAW) {
-    if (Array.isArray(KNOWLEDGE_BASE_RAW)) {
-      extra +=
-        "\n\nДополнительные вопросы и ответы (если подходят по смыслу, используй их):\n" +
-        KNOWLEDGE_BASE_RAW
-          .map(
-            (item, i) =>
-              `Q${i + 1}: ${item.question || item.q || ""}\nA${
-                i + 1
-              }: ${item.answer || item.a || ""}`
-          )
-          .join("\n\n");
-    } else if (
-      KNOWLEDGE_BASE_RAW.items &&
-      Array.isArray(KNOWLEDGE_BASE_RAW.items)
-    ) {
-      extra +=
-        "\n\nДополнительные вопросы и ответы (если подходят по смыслу, используй их):\n" +
-        KNOWLEDGE_BASE_RAW.items
-          .map(
-            (item, i) =>
-              `Q${i + 1}: ${item.question || item.q || ""}\nA${
-                i + 1
-              }: ${item.answer || item.a || ""}`
-          )
-          .join("\n\n");
-    }
-  }
-
-  return KNOWLEDGE_TEXT + extra;
-}
-
-// ----- ОСНОВНОЙ ЧАТ -----
-// ожидаем { messages: [{role:"user"/"assistant", content:"..."}, ...] }
 app.post("/chat", async (req, res) => {
   try {
-    const body = req.body || {};
-    let { messages } = body;
+    const { messages } = req.body || {};
 
-    // на всякий случай: поддержка старого формата { userMessage }
-    if ((!messages || !Array.isArray(messages)) && body.userMessage) {
-      messages = [{ role: "user", content: String(body.userMessage) }];
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.status(400).json({ reply: "Пожалуйста, напишите ваш вопрос." });
     }
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return res.json({
-        reply: "Пожалуйста, напишите ваш вопрос о студии CosmoDance.",
-      });
+    let knowledgeText = "";
+    if (KNOWLEDGE_BASE && Array.isArray(KNOWLEDGE_BASE.items)) {
+      const items = KNOWLEDGE_BASE.items;
+      knowledgeText =
+        "\n\nВот база вопросов и ответов CosmoDance (используй её, когда это уместно):\n" +
+        items
+          .map(
+            (item, i) =>
+              `Q${i + 1}: ${item.question || item.q || ""}\nA${i + 1}: ${
+                item.answer || item.a || ""
+              }`
+          )
+          .join("\n\n");
     }
 
-    // ограничим историю, чтобы не раздувать запрос слишком сильно
-    const SHORT_HISTORY_LIMIT = 12;
-    let trimmed = messages.slice(-SHORT_HISTORY_LIMIT);
+    const scheduleText = buildScheduleText();
 
-    // подготавливаем системное сообщение
-    let systemContent = SYSTEM_PROMPT + buildKnowledgeTextForModel();
-
-    // добавляем расписание только если в последнем сообщении очевидно про расписание/дни/время
-    const lastUser = [...trimmed].reverse().find((m) => m.role === "user");
-    if (lastUser && typeof lastUser.content === "string") {
-      const txt = lastUser.content.toLowerCase();
-      const triggerWords = [
-        "расписан",
-        "во сколько",
-        "какие дни",
-        "когда занятия",
-        "какие дни идут",
-        "дни недели",
-      ];
-      if (
-        SCHEDULE_TEXT &&
-        triggerWords.some((w) => txt.includes(w))
-      ) {
-        systemContent += SCHEDULE_TEXT;
-      }
-    }
-
-    const modelMessages = [
-      { role: "system", content: systemContent },
-      ...trimmed.map((m) => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: String(m.content || ""),
-      })),
+    const oaMessages = [
+      { role: "system", content: SYSTEM_PROMPT + knowledgeText + scheduleText },
+      // далее — весь диалог, который прислал фронт
+      ...messages,
     ];
 
-    const completion = await client.chat.completions.create({
+    const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
-      messages: modelMessages,
+      messages: oaMessages,
       temperature: 0.5,
-      max_tokens: 700,
+      max_tokens: 800,
     });
 
     const reply =
       completion.choices?.[0]?.message?.content?.trim() ||
-      "Извините, у меня не получилось сформировать ответ. Попробуйте, пожалуйста, задать вопрос чуть по-другому.";
+      "Извините, у меня не получилось сформировать ответ. Попробуйте переформулировать вопрос.";
 
     res.json({ reply });
   } catch (error) {
     console.error("Ошибка в /chat:", error);
     res.status(500).json({
       reply:
-        "Извините, сейчас у меня технические сложности. Попробуйте, пожалуйста, задать вопрос ещё раз чуть позже или свяжитесь с администратором студии.",
+        "Извините, сейчас у меня техническая пауза. Попробуйте задать вопрос чуть позже или свяжитесь с администратором студии.",
     });
   }
 });
+
+// ===== ОТЧЁТ ПО ДИАЛОГУ (вариант B) =====
+
+app.post("/report", async (req, res) => {
+  try {
+    const { messages } = req.body || {};
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return res.json({ status: "skip" });
+    }
+
+    // коротко ужимаем диалог в понятный отчёт
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "Ты помощник администратора студии танцев CosmoDance. " +
+            "Тебе передан диалог с клиентом. Сжато опиши суть: кто, возраст, филиал, интересующие направления, " +
+            "какая группа/расписание выбраны, оставил ли человек контакты. Формат — короткий текст для администратора.",
+        },
+        { role: "user", content: JSON.stringify(messages, null, 2) },
+      ],
+      max_tokens: 400,
+      temperature: 0.3,
+    });
+
+    const summary =
+      completion.choices?.[0]?.message?.content?.trim() ||
+      "Не удалось сформировать отчёт по диалогу.";
+
+    // отправка в Telegram — заполняешь свои переменные в Render:
+    // TELEGRAM_BOT_TOKEN и TELEGRAM_ADMIN_CHAT_ID (числом)
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+    const tgChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+
+    if (tgToken && tgChatId) {
+      const url = `https://api.telegram.org/bot${tgToken}/sendMessage`;
+      const body = {
+        chat_id: tgChatId,
+        text: `Отчёт по диалогу CosmoDance:\n\n${summary}`,
+        parse_mode: "HTML",
+      };
+
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } else {
+      console.warn("TELEGRAM_BOT_TOKEN или TELEGRAM_ADMIN_CHAT_ID не заданы — отчёт не отправлен");
+    }
+
+    res.json({ status: "ok" });
+  } catch (e) {
+    console.error("Ошибка в /report:", e);
+    res.status(500).json({ status: "error" });
+  }
+});
+
+// ===== ЗАПУСК СЕРВЕРА =====
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => {
