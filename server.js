@@ -1,9 +1,6 @@
-// server.js
-// Полностью готовый вариант
-
 import path from "path";
 import { fileURLToPath } from "url";
-import fs from "fs/promises";
+import fs from "fs";
 
 import express from "express";
 import cors from "cors";
@@ -15,336 +12,336 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ---------- Базовая настройка сервера ----------
-
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "2mb" })); // принимаем JSON до 2 МБ
 
+// ---------- OpenAI клиент ----------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ---------- Загрузка локальных файлов (knowledge + расписание) ----------
+// ---------- База знаний (расписание + ответы) ----------
+let KNOWLEDGE_BASE = null;
 
-let KNOWLEDGE_BASE = null; // то, что ты заливаешь через upload.js
-let SCHEDULE = null;       // cosmo_schedule_all_branches_ready.json
-
-async function loadLocalData() {
-  // knowledge.json
-  try {
-    const kbPath = path.join(__dirname, "knowledge.json");
-    const kbRaw = await fs.readFile(kbPath, "utf-8");
-    KNOWLEDGE_BASE = JSON.parse(kbRaw);
-    console.log("✅ knowledge.json загружен");
-  } catch (e) {
-    console.warn("⚠️ Не удалось загрузить knowledge.json:", e.message);
-  }
-
-  // расписание
-  try {
-    const schedulePath = path.join(
-      __dirname,
-      "cosmo_schedule_all_branches_ready.json"
+// пробуем при старте подхватить cosmo_schedule_all_branches_ready.json,
+// чтобы даже без upload.js бот что-то знал о группах
+try {
+  const schedulePath = path.join(
+    __dirname,
+    "cosmo_schedule_all_branches_ready.json"
+  );
+  if (fs.existsSync(schedulePath)) {
+    const raw = fs.readFileSync(schedulePath, "utf-8");
+    const data = JSON.parse(raw);
+    KNOWLEDGE_BASE = data;
+    console.log(
+      "[INIT] cosmo_schedule_all_branches_ready.json загружен, групп:",
+      Array.isArray(data.groups) ? data.groups.length : "нет массива groups"
     );
-    const schedRaw = await fs.readFile(schedulePath, "utf-8");
-    SCHEDULE = JSON.parse(schedRaw);
-    console.log("✅ Файл расписания загружен");
-  } catch (e) {
-    console.warn(
-      "⚠️ Не удалось загрузить cosmo_schedule_all_branches_ready.json:",
-      e.message
+  } else {
+    console.log(
+      "[INIT] Файл cosmo_schedule_all_branches_ready.json не найден — ждем upload.js"
     );
   }
+} catch (e) {
+  console.error("[INIT] Ошибка при чтении cosmo_schedule_all_branches_ready.json:", e);
 }
 
-loadLocalData();
+// ---------- Системная подсказка ----------
+const SYSTEM_PROMPT = `
+Ты — дружелюбный и внимательный ассистент студии танцев CosmoDance.
 
-// ---------- Хранение сессий (история диалога) ----------
+Твоя задача:
+- помогать выбрать филиал (Звёздная, Озерки, Дыбенко, Купчино),
+- подбирать направления и группы по возрасту, уровню и целям,
+- подсказывать расписание групп,
+- рассказывать про абонементы и пробные занятия,
+- отвечать на типовые вопросы о студии.
 
-/**
- * SESSIONS: {
- *   [sessionId]: {
- *      messages: [{role: "user"|"assistant", content: string}],
- *      lastActivity: number (Date.now()),
- *      finished: boolean
- *   }
- * }
- */
-const SESSIONS = new Map();
-const INACTIVITY_MINUTES = 10;
+Важно:
 
-function getSession(sessionId) {
-  let session = SESSIONS.get(sessionId);
-  if (!session) {
-    session = {
-      messages: [],
-      lastActivity: Date.now(),
-      finished: false,
-    };
-    SESSIONS.set(sessionId, session);
-  }
-  return session;
-}
+1) Отвечай ТОЛЬКО по теме студии CosmoDance и танцев.
+   Если вопрос никак не связан со студией, отвечай:
+   "Я отвечаю только на вопросы о студии CosmoDance — филиалах, направлениях, расписании и записях на занятия."
 
-function cleanOldSessions() {
-  const now = Date.now();
-  for (const [id, session] of SESSIONS) {
-    if (now - session.lastActivity > INACTIVITY_MINUTES * 60 * 1000) {
-      SESSIONS.delete(id);
-    }
-  }
-}
+2) Всегда опирайся на базу знаний и расписание, которое тебе передано.
+   Если в базе есть подходящая группа — предлагай конкретные варианты:
+   филиал, название группы, возраст/уровень (если указан), дни недели и время.
 
-// чистим старые сессии раз в 5 минут
-setInterval(cleanOldSessions, 5 * 60 * 1000);
+3) Возраст и уровни:
+   - "начинающие", "для новичков", "без опыта" — одно и то же.
+   - "команда" или "team" — это группы по кастингу, туда записывают только с опытом.
+   - Если написано "16+" — это группа для взрослых, куда можно прийти и в 20, 30, 40 лет и старше,
+     если нет медицинских ограничений.
+   - Если человек переживает, что в группе будут "все 16, а мне 40",
+     спокойно объясни, что в группах часто бывают разные возраста,
+     можно прийти на пробное занятие и посмотреть состав группы,
+     а хореограф поможет мягко влиться в процесс.
 
-// ---------- Построение системного промпта ----------
+4) Пробное занятие и заявка:
+   - Когда человек уже выбрал филиал, направление и удобную группу/расписание,
+     уточни, готов ли он записаться на пробное занятие.
+   - Если человек согласен, СДЕЛАЙ КРАТКОЕ РЕЗЮМЕ заявки в конце ответа:
+     филиал, направление, группа/расписание, возраст (если есть), уровень (новичок/есть опыт),
+     имя/телефон (если он их написал).
+   - Не придумывай телефон и имя, если их ещё не было.
 
-function buildSystemPrompt() {
-  let prompt = `
-Ты — дружелюбный онлайн-ассистент студии танцев CosmoDance.
+5) Диалог и память:
+   - Всегда учитывай ВСЮ предыдущею переписку, присланную тебе в history.
+   - Если человек уже ответил на твой вопрос (например, написал "5 лет звёздная" или
+     "звездная, ребёнок 7 лет, начинаем с нуля"), НЕ СПРАШИВАЙ это повторно.
+   - Умей понимать короткие ответы и фразы, где несколько параметров в одной строке.
+     Примеры:
+       "5 лет звёздная" → возраст ребёнка 5 лет, филиал Звёздная.
+       "для себя, Купчино, новичок" → занятия для взрослого, филиал Купчино, уровень новичок.
+   - Формулируй вопросы так, чтобы двигаться дальше, а не повторять уже выяснённое.
 
-Твои задачи:
-- помогать выбрать филиал, направление и группу;
-- подсказывать расписание и абонементы;
-- объяснять условия пробного занятия;
-- поддерживать и мотивировать, но не давить.
-
-Важные правила:
-- Отвечай ТОЛЬКО по теме студии CosmoDance и танцев.
-- Всегда учитывай предыдущие ответы человека в ЭТОМ диалоге (филиал, возраст, опыт, цели и т.п.).
-- Не задавай один и тот же вопрос по несколько раз, если уже получил понятный ответ.
-- Пиши на «вы», дружелюбно и простым человеческим языком.
-- Если вопрос не по теме студии — мягко скажи, что отвечаешь только по студии, и предложи задать другой вопрос.
+6) Стиль:
+   - Обращайся на "вы".
+   - Пиши простым живым языком, тепло и поддерживающе, без канцелярита.
+   - Помогай снять волнения: "а если я новичок", "а если мне много лет", "я стесняюсь" и т.п.
+   - Отвечай по существу, но не слишком длинно — 3–8 коротких абзацев обычно достаточно.
 `;
 
-  if (SCHEDULE && Array.isArray(SCHEDULE.groups)) {
-    prompt += `
-У тебя есть структурированное расписание групп CosmoDance (разные филиалы, группы, дни недели и время).
-Если видишь, что человек спрашивает про расписание или хочет подобрать группу,
-используй эти данные, чтобы предлагать реальные варианты занятий.
+// ---------- Вспомогательные функции ----------
 
-Если возраст группы написан как "16+", это означает "от 16 и старше" — взрослым любого возраста туда можно,
-кроме очень пожилых людей (60+), которым лучше предложить более мягкие направления (зумба, латина и т.п.).
-`;
-  }
-
-  return prompt.trim();
-}
-
-// превратить KNOWLEDGE_BASE в текст для промпта
-function knowledgeToText() {
+function buildKnowledgeText() {
   if (!KNOWLEDGE_BASE) return "";
 
-  if (Array.isArray(KNOWLEDGE_BASE.items)) {
-    return (
-      "\n\nДополнительная база вопросов и ответов по студии:\n" +
-      KNOWLEDGE_BASE.items
-        .map(
-          (item, i) =>
-            `Q${i + 1}: ${item.question || ""}\nA${i + 1}: ${
-              item.answer || ""
-            }`
-        )
-        .join("\n\n")
+  let parts = [];
+
+  // Расписание групп
+  if (Array.isArray(KNOWLEDGE_BASE.groups) && KNOWLEDGE_BASE.groups.length > 0) {
+    const lines = KNOWLEDGE_BASE.groups.map((g, i) => {
+      const branch = g.branch || "Филиал не указан";
+      const name = g.group_name || "Группа без названия";
+      const level = g.level || (g.is_team ? "команда" : "уровень не указан");
+      const teacher = g.teacher ? `Преподаватель: ${g.teacher}. ` : "";
+
+      let scheduleStr = "";
+      if (g.schedule && typeof g.schedule === "object") {
+        const dayMap = {
+          "Пн": "понедельник",
+          "Вт": "вторник",
+          "Ср": "среда",
+          "Чт": "четверг",
+          "Пт": "пятница",
+          "Сб": "суббота",
+          "Вс": "воскресенье",
+        };
+        const dayParts = [];
+        for (const [shortDay, time] of Object.entries(g.schedule)) {
+          if (!time) continue;
+          const fullDay = dayMap[shortDay] || shortDay;
+          dayParts.push(`${fullDay}: ${time}`);
+        }
+        if (dayParts.length > 0) {
+          scheduleStr = "Расписание: " + dayParts.join("; ") + ". ";
+        }
+      }
+
+      return `Группа ${i + 1}: филиал ${branch}, направление "${name}", уровень: ${level}. ${teacher}${scheduleStr}`.trim();
+    });
+
+    parts.push(
+      "Ниже расписание групп CosmoDance. Используй его, когда подбираешь занятия:\n" +
+        lines.join("\n")
     );
   }
 
-  if (Array.isArray(KNOWLEDGE_BASE)) {
-    return (
-      "\n\nДополнительная база вопросов и ответов по студии:\n" +
-      KNOWLEDGE_BASE.map(
-        (item, i) =>
-          `Q${i + 1}: ${item.question || ""}\nA${i + 1}: ${item.answer || ""}`
-      ).join("\n\n")
-    );
-  }
+  // Если в будущем будут ещё поля (FAQ и т.п.) — можно добавить сюда.
 
-  return "";
-}
-
-// ---------- Отправка отчёта в Telegram (после завершения диалога) ----------
-
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;      // твой бот
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID; // id @denvertop или общего чата
-
-async function sendDialogSummaryToTelegram(sessionId, dialogMessages) {
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return; // если не настроено — тихо выходим
-
-  // Сформируем краткое резюме диалога через OpenAI
-  let summaryText;
-  try {
-    const completion = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "Сделай короткий отчёт о диалоге между клиентом и студией танцев. Важное: филиал, возраст, опыт, цель, выбранное направление/группа/расписание, договорились ли о пробном, есть ли телефон.",
-        },
-        {
-          role: "user",
-          content:
-            "Вот история диалога:\n\n" +
-            dialogMessages
-              .map((m) =>
-                m.role === "user"
-                  ? `КЛИЕНТ: ${m.content}`
-                  : `БОТ: ${m.content}`
-              )
-              .join("\n"),
-        },
-      ],
-      temperature: 0.2,
-      max_tokens: 300,
-    });
-
-    summaryText = completion.choices?.[0]?.message?.content?.trim();
-  } catch (e) {
-    console.error("Ошибка при суммаризации диалога:", e);
-    summaryText = null;
-  }
-
-  const text =
-    (summaryText || "Не удалось автоматически сделать отчёт по диалогу.") +
-    `\n\nID сессии: ${sessionId}`;
-
-  const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-
-  try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text,
-      }),
-    });
-  } catch (e) {
-    console.error("Ошибка отправки отчёта в Telegram:", e);
-  }
+  return parts.length > 0
+    ? "\n\nВот база знаний по группам и расписанию CosmoDance. Отвечая пользователю, опирайся на эти данные и НЕ придумывай расписание:\n\n" +
+        parts.join("\n\n")
+    : "";
 }
 
 // ---------- Маршруты ----------
 
-// отдать страницу чата
+// Отдать страницу чата
 app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"), {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 });
 
-// принять базу знаний (upload.js шлёт сюда knowledge.json)
+// Приём базы знаний (upload.js шлёт сюда knowledge.json / расписание)
 app.post("/upload", (req, res) => {
   try {
-    KNOWLEDGE_BASE = req.body;
-    console.log("✅ База знаний обновлена через /upload");
+    const body = req.body;
+    if (!body) {
+      return res.status(400).json({
+        status: "error",
+        message: "Пустое тело запроса",
+      });
+    }
+
+    KNOWLEDGE_BASE = body;
+    let count = null;
+    if (Array.isArray(body)) count = body.length;
+    else if (body.groups && Array.isArray(body.groups)) count = body.groups.length;
+    else if (body.items && Array.isArray(body.items)) count = body.items.length;
+
+    console.log("База знаний обновлена, записей:", count ?? "неизвестно");
+
     return res.json({
       status: "ok",
-      message: "База знаний обновлена на сервере",
+      message: "База принята на сервере",
+      count,
     });
   } catch (e) {
     console.error("Ошибка в /upload:", e);
-    // Важно: даже при ошибке отдаём 200, чтобы не было красной ошибки на фронте
-    return res.status(200).json({
+    return res.status(500).json({
       status: "error",
-      message: "Не удалось сохранить базу знаний на сервере.",
+      message: "Ошибка при загрузке базы",
     });
   }
 });
 
-// основной чат
+// Основной чат
 app.post("/chat", async (req, res) => {
   try {
-    const { sessionId, userMessage } = req.body || {};
+    const { history } = req.body || {};
 
-    if (!userMessage || typeof userMessage !== "string") {
-      return res.status(200).json({
+    if (!Array.isArray(history) || history.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: "EMPTY_HISTORY",
         reply: "Пожалуйста, напишите ваш вопрос о студии CosmoDance 🙂",
       });
     }
 
-    // Если фронт не прислал sessionId — привяжем к ip (на всякий случай)
-    const sid = sessionId || "anon-" + (req.ip || "unknown");
+    // Обрезаем историю, чтобы не раздувать контекст
+    const MAX_MESSAGES = 20; // последних 20 сообщений (10 пар "вопрос-ответ")
+    const shortHistory =
+      history.length > MAX_MESSAGES
+        ? history.slice(history.length - MAX_MESSAGES)
+        : history;
 
-    const session = getSession(sid);
-    session.lastActivity = Date.now();
-    session.finished = false;
-
-    // добавляем сообщение пользователя в историю
-    session.messages.push({ role: "user", content: userMessage });
-
-    // ограничим длину истории, чтобы она не разрасталась бесконечно
-    if (session.messages.length > 40) {
-      session.messages = session.messages.slice(-40);
-    }
-
-    const systemPrompt = buildSystemPrompt() + knowledgeToText();
+    const knowledgeText = buildKnowledgeText();
 
     const messagesForModel = [
-      { role: "system", content: systemPrompt },
-      ...session.messages,
+      { role: "system", content: SYSTEM_PROMPT },
+      ...(knowledgeText
+        ? [{ role: "system", content: knowledgeText }]
+        : []),
+      ...shortHistory.map((msg) => ({
+        role: msg.role === "assistant" ? "assistant" : "user",
+        content: String(msg.content || ""),
+      })),
     ];
 
     const completion = await client.chat.completions.create({
       model: "gpt-4.1-mini",
       messages: messagesForModel,
-      temperature: 0.5,
+      temperature: 0.6,
       max_tokens: 700,
     });
 
-    const replyText =
+    const reply =
       completion.choices?.[0]?.message?.content?.trim() ||
-      "Извините, у меня не получилось сформировать ответ. Попробуйте переформулировать вопрос.";
+      "Извините, у меня не получилось сформировать ответ. Попробуйте переформулировать вопрос 🙂";
 
-    // сохраняем ответ ассистента
-    session.messages.push({ role: "assistant", content: replyText });
-
-    return res.status(200).json({
-      reply: replyText,
-      sessionId: sid,
+    return res.json({
+      ok: true,
+      reply,
     });
   } catch (error) {
     console.error("Ошибка в /chat:", error);
-
-    // КРИТИЧЕСКИЙ МОМЕНТ:
-    // Возвращаем 200, а не 500 — фронт больше НЕ будет показывать красную плашку
-    return res.status(200).json({
+    return res.status(500).json({
+      ok: false,
+      error: "SERVER_ERROR",
       reply:
-        "Извините, сейчас у меня небольшая техническая пауза. Попробуйте задать вопрос ещё раз или чуть позже. Если ошибка повторяется, можно написать администратору студии.",
+        "Извините, сейчас у меня небольшая техническая пауза. Попробуйте задать вопрос ещё раз или немного переформулировать его. Если ошибка повторяется, можно написать администратору студии.",
     });
   }
 });
 
-// завершение диалога (вызывается при «Начать сначала» или по таймеру 10 минут)
-app.post("/finish-dialog", async (req, res) => {
+// Отчёт о диалоге (автоматически после завершения)
+app.post("/report", async (req, res) => {
   try {
-    const { sessionId } = req.body || {};
-    if (!sessionId) {
-      return res.status(200).json({ status: "ok" });
+    const { history, reason } = req.body || {};
+
+    if (!Array.isArray(history) || history.length === 0) {
+      return res.json({ ok: true, skipped: true, message: "Нет истории для отчёта" });
     }
 
-    const session = SESSIONS.get(sessionId);
-    if (!session || session.finished) {
-      return res.status(200).json({ status: "ok" });
+    // Готовим текст для сводки
+    const plainLog = history
+      .map((m) => `${m.role === "assistant" ? "Бот" : "Клиент"}: ${m.content}`)
+      .join("\n");
+
+    let summaryText = plainLog;
+
+    // Если есть ключ OpenAI — попробуем сделать короткую сводку
+    try {
+      const summaryCompletion = await client.chat.completions.create({
+        model: "gpt-4.1-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Ты делаешь очень краткое резюме диалога клиента со студией танцев CosmoDance для администратора.",
+          },
+          {
+            role: "user",
+            content:
+              "Вот весь диалог. Составь краткую выжимку: кто, какой филиал/направление/возраст интересовал, к чему в итоге пришли, готов ли человек записаться.\n\n" +
+              plainLog,
+          },
+        ],
+        max_tokens: 250,
+        temperature: 0.3,
+      });
+
+      summaryText =
+        summaryCompletion.choices?.[0]?.message?.content?.trim() || plainLog;
+    } catch (e) {
+      console.error("Ошибка при создании сводки для отчёта:", e);
     }
 
-    session.finished = true;
+    const finalText =
+      `Отчёт о диалоге CosmoDance.\nПричина завершения: ${reason || "не указана"}.\n\n` +
+      summaryText;
 
-    // отправляем отчёт в Telegram (вариант 3, как мы обсуждали)
-    await sendDialogSummaryToTelegram(sessionId, session.messages);
+    // Если настроен Telegram-бот — отправляем
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+    const chatId = process.env.TELEGRAM_CHAT_ID; // сюда ты сам подставишь ID/канал
 
-    return res.status(200).json({ status: "ok" });
+    if (botToken && chatId) {
+      const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+
+      await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: finalText,
+          parse_mode: "HTML",
+        }),
+      });
+
+      return res.json({ ok: true, sentToTelegram: true });
+    }
+
+    // Если Telegram не настроен — просто возвращаем сводку (можно смотреть в логах Render)
+    console.log("[REPORT]\n" + finalText);
+
+    return res.json({ ok: true, sentToTelegram: false, summary: finalText });
   } catch (e) {
-    console.error("Ошибка в /finish-dialog:", e);
-    return res.status(200).json({ status: "error" });
+    console.error("Ошибка в /report:", e);
+    return res.status(500).json({ ok: false });
   }
 });
 
-// ---------- Старт сервера ----------
+// Простой health-check
+app.get("/health", (_req, res) => {
+  res.json({ ok: true });
+});
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => {
-  console.log(`🚀 CosmoDance server listening on port ${port}`);
+  console.log(`CosmoDance server listening on port ${port}`);
 });
