@@ -1,5 +1,4 @@
-// server.js — ВАРИАНТ B, GPT-5.1, без зацикливаний
-
+// server.js — ИСПРАВЛЕННАЯ ВЕРСИЯ
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -7,70 +6,111 @@ import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import rateLimit from 'express-rate-limit';
+import winston from 'winston';
 
 dotenv.config();
+
+// Проверка обязательных переменных
+if (!process.env.OPENAI_API_KEY) {
+  console.error("❌ OPENAI_API_KEY не найден в .env файле!");
+  process.exit(1);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-app.use(cors());
-app.use(express.json({ limit: "2mb" }));
+
+// Настройка CORS
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production' 
+    ? ['https://ваш-домен.ru'] 
+    : '*',
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
+// Лимит размера запросов
+app.use(express.json({ limit: "100kb" }));
+
+// Логирование
+const logger = winston.createLogger({
+  level: 'info',
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' })
+  ]
+});
+
+// Rate limiting
+const chatLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 50,
+  message: { 
+    reply: "Слишком много запросов. Пожалуйста, подождите 15 минут." 
+  }
+});
 
 // ---------- OpenAI клиент ----------
 const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ---------- Загрузка базы знаний и расписания из файлов ----------
-// Ожидаем, что файлы лежат рядом с server.js:
-//   cosmo-knowledge-full.json
-//   cosmo_schedule_all_branches_ready.json
-
+// ---------- Загрузка и кэширование данных ----------
 let KNOWLEDGE = null;
 let SCHEDULE = null;
+let cachedContext = null;
+let lastCacheUpdate = null;
+const CACHE_TTL = 5 * 60 * 1000; // 5 минут
 
 function safeLoadJSON(relativePath, label) {
   try {
     const fullPath = path.join(__dirname, relativePath);
     if (!fs.existsSync(fullPath)) {
-      console.warn(`[${label}] Файл не найден:`, fullPath);
+      logger.warn(`${label} файл не найден: ${fullPath}`);
       return null;
     }
     const text = fs.readFileSync(fullPath, "utf8");
     const data = JSON.parse(text);
-    console.log(`[${label}] успешно загружен`);
+    logger.info(`${label} успешно загружен`);
     return data;
   } catch (e) {
-    console.error(`[${label}] Ошибка загрузки:`, e);
+    logger.error(`Ошибка загрузки ${label}: ${e.message}`);
     return null;
   }
 }
 
-KNOWLEDGE = safeLoadJSON("cosmo-knowledge-full.json", "KNOWLEDGE");
-SCHEDULE = safeLoadJSON("cosmo_schedule_all_branches_ready.json", "SCHEDULE");
-
-// ---------- Вспомогательные функции ----------
-
-const DAY_FULL = {
-  "Пн": "понедельник",
-  "Вт": "вторник",
-  "Ср": "среда",
-  "Чт": "четверг",
-  "Пт": "пятница",
-  "Сб": "суббота",
-  "Вс": "воскресенье",
-};
+function loadData() {
+  KNOWLEDGE = safeLoadJSON("cosmo-knowledge-full.json", "KNOWLEDGE");
+  SCHEDULE = safeLoadJSON("cosmo_schedule_all_branches_ready.json", "SCHEDULE");
+  
+  if (!KNOWLEDGE || !SCHEDULE) {
+    logger.error("Не удалось загрузить данные для бота");
+  }
+}
 
 function buildScheduleText() {
-  if (!SCHEDULE || !Array.isArray(SCHEDULE.groups)) return "";
+  if (!SCHEDULE || !Array.isArray(SCHEDULE.groups)) {
+    return "Расписание временно недоступно.";
+  }
 
-  const lines = SCHEDULE.groups.map((g) => {
-    const branch = g.branch || "Филиал";
-    const groupName = g.group_name || "Группа";
-    const teacher = g.teacher || "преподаватель уточняется";
-    const level = g.level || "уровень по расписанию";
+  const DAY_FULL = {
+    "Пн": "понедельник",
+    "Вт": "вторник",
+    "Ср": "среда",
+    "Чт": "четверг",
+    "Пт": "пятница",
+    "Сб": "суббота",
+    "Вс": "воскресенье",
+  };
 
+  return SCHEDULE.groups.map((g) => {
     const times = Object.entries(g.schedule || {})
       .filter(([_, v]) => v && String(v).trim() !== "")
       .map(([shortDay, time]) => {
@@ -78,188 +118,154 @@ function buildScheduleText() {
         return `${fullDay}: ${time}`;
       });
 
-    const scheduleStr =
-      times.length > 0
-        ? times.join(", ")
-        : "расписание уточняется у администратора";
+    const scheduleStr = times.length > 0
+      ? times.join(", ")
+      : "расписание уточняется";
 
-    return `Филиал: ${branch}. Группа: ${groupName}. Преподаватель: ${teacher}. Уровень: ${level}. Расписание: ${scheduleStr}.`;
-  });
-
-  return (
-    "### Расписание групп студии CosmoDance по филиалам:\n" +
-    lines.join("\n")
-  );
+    return `Филиал: ${g.branch || "не указан"}. Группа: ${g.group_name || "не указана"}. Преподаватель: ${g.teacher || "уточняется"}. Расписание: ${scheduleStr}.`;
+  }).join("\n");
 }
 
 function buildKnowledgeText() {
-  if (!KNOWLEDGE || !Array.isArray(KNOWLEDGE.docs)) return "";
-  const parts = KNOWLEDGE.docs.map(
-    (d) => `### ${d.title}\n${d.text}`
-  );
-  return parts.join("\n\n");
+  if (!KNOWLEDGE || !Array.isArray(KNOWLEDGE.docs)) {
+    return "Информация о студии временно недоступна.";
+  }
+  
+  // Берем только первые 20 документов чтобы не перегружать контекст
+  const limitedDocs = KNOWLEDGE.docs.slice(0, 20);
+  return limitedDocs.map(d => `### ${d.title}\n${d.text}`).join("\n\n");
 }
 
-const STATIC_CONTEXT = `${buildKnowledgeText()}\n\n${buildScheduleText()}`;
+function getContext() {
+  const now = Date.now();
+  if (!cachedContext || !lastCacheUpdate || (now - lastCacheUpdate) > CACHE_TTL) {
+    cachedContext = `${buildKnowledgeText()}\n\n${buildScheduleText()}`;
+    lastCacheUpdate = now;
+    
+    // Обрезка контекста (~15000 токенов максимум)
+    const maxLength = 60000; // символов
+    if (cachedContext.length > maxLength) {
+      cachedContext = cachedContext.substring(0, maxLength) + "...\n\n[Информация обрезана для оптимизации]";
+    }
+  }
+  return cachedContext;
+}
 
-// ---------- Системная подсказка (логика бота) ----------
+// Загружаем данные при старте
+loadData();
 
-const SYSTEM_PROMPT = `
-Ты — умный и доброжелательный ассистент студии танцев CosmoDance в Санкт-Петербурге.
+// ---------- Системная подсказка ----------
+const SYSTEM_PROMPT = `Ты — ассистент студии танцев CosmoDance в Санкт-Петербурге.
+Отвечай только по теме студии. Если вопрос не про студию — вежливо откажись отвечать.
+Всегда обращайся на "вы". Будь доброжелательным и поддерживающим.`;
 
-ОБЩИЕ ПРАВИЛА:
-• Отвечай строго по теме студии: направления, филиалы, расписание, цены, абонементы, пробные занятия, выступления и т.п.
-• Если вопрос не про студию и не про танцы — мягко возвращай к теме: 
-  "Я могу отвечать только на вопросы о студии танцев CosmoDance и занятиях. Пожалуйста, задайте вопрос по студии."
-• Всегда обращайся к человеку на "вы".
-• Пиши простым человеческим языком, короткими абзацами, без канцелярита.
-• В ответах старайся поддержать и успокоить человека, особенно новичков и родителей.
-• Если чего-то нет в базе (точный процент скидки, спорные вопросы по оплате и т.п.) — не выдумывай. 
-  Напиши, что это лучше уточнить у администратора, и предложи оставить номер телефона.
-
-РАБОТА С ДЕТЬМИ:
-• Если речь о ребёнке — уточняй возраст и есть ли танцевальный опыт.
-• Можно аккуратно спросить: "Скажите, пожалуйста, сколько лет ребёнку и занимался ли он раньше танцами?"
-• Не спрашивай родителей "что для вас важнее: развитие, сцена, соревнования" — эту связку не используем.
-• Рассказывая о детских группах, упоминай:
-  – нашу открытость (мониторы в зоне ожидания, трансляция занятий),
-  – дневник танцора (отметки педагога, этапы, подарки),
-  – возможность выступать на большой сцене на отчётном концерте.
-
-РАБОТА СО ВЗРОСЛЫМИ:
-• Сначала выясни, для себя ли человек ищет занятия или для ребёнка.
-• Если для себя — уточни, есть ли опыт и что хочется получить (пластика, уверенность, активность, парные танцы и т.д.).
-• Если возраст взрослого очень большой (60–70+), не предлагай откровенно молодёжные стили 
-  вроде стрит-направлений, стрип/heels, агрессивного хип-хопа. Лучше предложи мягкие и комфортные стили 
-  (зумба, латиноамериканские танцы, более спокойные группы).
-
-РАБОТА С РАСПИСАНИЕМ:
-• В расписании группы привязаны к конкретным дням и времени — человек НЕ может "выбрать любое время".
-• Всегда опирайся на уже существующие группы из расписания.
-• Сначала определяем направление и филиал, потом предлагаем конкретные группы по расписанию.
-• Группы "команда" — только для учеников с опытом и по кастингу. Новичкам их не предлагай.
-• Новичкам предлагай группы с пометками "начинающие" (и аналогичные по смыслу).
-• Всегда пиши дни недели клиенту полностью: "понедельник, вторник, среда, четверг, пятница, суббота, воскресенье".
-  Даже если в исходном расписании сокращения "Пн", "Вт" и т.п.
-• Расписание индивидуальных занятий:
-  – время индивидуального урока подбирается с педагогом,
-  – сначала направление и филиал, потом контакт, потом согласование времени.
-
-АНАЛИЗ КРАТКИХ ОТВЕТОВ:
-• Внимательно анализируй короткие фразы, например: "5 звездное", "звёздное 5 лет", "Звездная 7".
-  Такие ответы могут одновременно содержать и возраст ребёнка, и филиал.
-• Если ты уже получил ответ на вопрос (возраст, филиал и т.п.), не задавай этот же вопрос повторно.
-• Считай, что регистр, буква "ё"/"е" и мелкие опечатки не важны — понимай смысл по контексту.
-
-ПОВЕДЕНИЕ ПРИ НЕПОНЯТНЫХ ВОПРОСАХ:
-• Сначала попробуй логически разобраться и переформулировать ответ, опираясь на базу знаний и расписание.
-• Если всё равно не получается — честно напиши:
-  "Похоже, в мою базу ещё не добавили точный ответ на этот вопрос. Попробуйте, пожалуйста, переформулировать 
-  или уточните у администратора студии."
-• Не пиши "техническая пауза", если нет реальной ошибки сервера.
-
-РАЗГОВОР:
-• Ты всегда видишь историю диалога (предыдущие реплики) и должен учитывать её.
-• Не задавай одни и те же вопросы несколько раз, если ответы уже были даны в ходе диалога.
-• Отвечай так, чтобы человеку было психологически комфортно: 
-  – если он переживает, что "все будут 16 лет, а мне 40" — объясни, что в группах часто разный возраст, 
-    что многие приходят с нуля и педагог помогает мягко влиться.
-  – если человек боится, что группа давно занимается — объясни, что программы построены так, 
-    чтобы можно было присоединиться в процессе, а педагог подстраивается и помогает догнать.
-
-ИТОГ:
-• Твоя цель — помочь человеку выбрать филиал, направление и конкретную группу по расписанию, 
-  снять страхи и при необходимости подвести к записи на пробное занятие.
-`;
-
-// ---------- Раздача статики (index.html и т.п.) ----------
-
+// ---------- Статика и маршруты ----------
 app.use(express.static(__dirname));
 
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"), {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
+  res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// ---------- Чат-эндпоинт ----------
-
-app.post("/chat", async (req, res) => {
+app.post("/chat", chatLimiter, async (req, res) => {
+  const startTime = Date.now();
+  
   try {
-    const { message, history } = req.body || {};
-
-    const userMessage = typeof message === "string" ? message.trim() : "";
+    const { message, history = [] } = req.body;
+    const userMessage = (message || "").trim();
+    
     if (!userMessage) {
       return res.status(400).json({
-        reply: "Пожалуйста, напишите ваш вопрос о студии CosmoDance.",
+        reply: "Пожалуйста, напишите ваш вопрос.",
+        error: "Пустое сообщение"
       });
     }
 
-    // history приходит с фронта — массив { role, content }
-    const safeHistory = Array.isArray(history)
-      ? history
-          .filter(
-            (m) =>
-              m &&
-              typeof m.role === "string" &&
-              typeof m.content === "string" &&
-              m.content.trim() !== ""
-          )
-          .map((m) => ({
-            role: m.role === "assistant" ? "assistant" : "user",
-            content: m.content.trim(),
-          }))
-      : [];
-
-    // собираем сообщения для модели:
-    const messages = [
-      {
-        role: "system",
-        content: SYSTEM_PROMPT,
-      },
-      {
-        role: "system",
-        content:
-          "Ниже представлена база знаний и расписание студии CosmoDance. Используй её максимально точно, " +
-          "когда отвечаешь на вопросы о студии, филиалах, направлениях и группах:\n\n" +
-          STATIC_CONTEXT,
-      },
-      // вся история диалога
-      ...safeHistory,
-      // текущее сообщение пользователя
-      {
-        role: "user",
-        content: userMessage,
-      },
-    ];
-
-    const completion = await client.chat.completions.create({
-      model: "gpt-5.1",
-      messages,
-      temperature: 0.5,
-      max_tokens: 900,
+    // Логируем запрос
+    logger.info('Chat request', {
+      message: userMessage.substring(0, 100),
+      historyLength: history.length,
+      ip: req.ip
     });
 
-    const reply =
-      completion.choices?.[0]?.message?.content?.trim() ||
-      "Извините, у меня не получилось сформировать ответ. Попробуйте переформулировать вопрос или уточните у администратора студии.";
+    // Подготовка истории
+    const safeHistory = history
+      .filter(m => m && m.role && m.content && m.content.trim())
+      .slice(-10) // Берем последние 10 сообщений
+      .map(m => ({
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: m.content.trim()
+      }));
+
+    // Получаем актуальный контекст
+    const context = getContext();
+
+    // Формируем сообщения для OpenAI
+    const messages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: `База знаний студии:\n${context}` },
+      ...safeHistory,
+      { role: "user", content: userMessage }
+    ];
+
+    // Вызов OpenAI
+    const completion = await client.chat.completions.create({
+      model: "gpt-4o-mini", // ИСПРАВЛЕНО: используем существующую модель
+      messages,
+      temperature: 0.5,
+      max_tokens: 800,
+    });
+
+    const reply = completion.choices?.[0]?.message?.content?.trim() ||
+      "Извините, не удалось сформировать ответ. Пожалуйста, попробуйте еще раз.";
+
+    const responseTime = Date.now() - startTime;
+    
+    // Логируем успешный ответ
+    logger.info('Chat response', {
+      responseTime: `${responseTime}ms`,
+      tokensUsed: completion.usage?.total_tokens || 0
+    });
 
     res.json({ reply });
+
   } catch (error) {
-    console.error("Ошибка в /chat:", error);
-    res.status(500).json({
-      reply:
-        "Извините, сейчас у меня техническая пауза на стороне сервера. Попробуйте задать вопрос чуть позже или свяжитесь с администратором студии.",
+    const responseTime = Date.now() - startTime;
+    
+    logger.error('Chat error', {
+      error: error.message,
+      stack: error.stack,
+      responseTime: `${responseTime}ms`,
+      ip: req.ip
+    });
+
+    // Пользовательские сообщения об ошибках
+    let errorMessage = "Извините, произошла ошибка. Попробуйте позже.";
+    
+    if (error.code === 'insufficient_quota') {
+      errorMessage = "Извините, превышен лимит запросов. Попробуйте позже.";
+    } else if (error.code === 'rate_limit_exceeded') {
+      errorMessage = "Слишком много запросов. Пожалуйста, подождите немного.";
+    }
+
+    res.status(500).json({ 
+      reply: errorMessage,
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
 
-// простой health-check для Render
 app.get("/health", (req, res) => {
-  res.json({ status: "ok" });
+  const health = {
+    status: "ok",
+    timestamp: new Date().toISOString(),
+    dataLoaded: !!(KNOWLEDGE && SCHEDULE),
+    memoryUsage: process.memoryUsage()
+  };
+  res.json(health);
 });
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => {
-  console.log(`CosmoDance server listening on port ${port}`);
+  logger.info(`Сервер запущен на порту ${port}`);
+  logger.info(`Режим: ${process.env.NODE_ENV || 'development'}`);
 });
