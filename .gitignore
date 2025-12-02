@@ -1,0 +1,37 @@
+# Ключи API и секреты
+.env
+.env.local
+.env.development
+.env.production
+
+# Логи
+*.log
+logs/
+npm-debug.log*
+
+# Базы данных
+*.db
+*.sqlite
+*.sqlite3
+
+# Зависимости
+node_modules/
+
+# IDE и редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# Сборка
+dist/
+build/
+coverage/
+
+# Временные файлы
+tmp/
+temp/
