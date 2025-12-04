@@ -12,12 +12,19 @@ class CosmoParser {
       timestamp: 0,
       ttl: 2 * 60 * 60 * 1000 // 2 часа
     };
+    this.stats = {
+      scheduleRequests: 0,
+      priceRequests: 0,
+      errors: 0
+    };
   }
 
   /**
    * Получить расписание с сайта
    */
   async getSchedule() {
+    this.stats.scheduleRequests++;
+    
     try {
       console.log('🌐 Парсим расписание с cosmo.su...');
       const { data } = await axios.get(this.scheduleUrl, {
@@ -66,6 +73,7 @@ class CosmoParser {
       return schedule;
 
     } catch (error) {
+      this.stats.errors++;
       console.error('❌ Ошибка парсинга расписания:', error.message);
       return this.getFallbackSchedule();
     }
@@ -75,6 +83,8 @@ class CosmoParser {
    * Получить цены с сайта
    */
   async getPrices() {
+    this.stats.priceRequests++;
+    
     try {
       console.log('💰 Парсим цены с cosmo.su...');
       const { data } = await axios.get(this.pricesUrl, {
@@ -115,6 +125,7 @@ class CosmoParser {
       return prices;
 
     } catch (error) {
+      this.stats.errors++;
       console.error('❌ Ошибка парсинга цен:', error.message);
       return { 'Информация': 'Цены на сайте: ' + this.pricesUrl };
     }
@@ -179,6 +190,31 @@ class CosmoParser {
       ],
       '_info': 'Это временное расписание. Пожалуйста, проверьте актуальное на сайте.'
     };
+  }
+
+  /**
+   * Получить статистику
+   */
+  getStats() {
+    return {
+      schedule_requests: this.stats.scheduleRequests,
+      price_requests: this.stats.priceRequests,
+      errors: this.stats.errors,
+      cacheAge: Date.now() - this.cache.timestamp,
+      cacheValid: this.cache.timestamp > 0 && (Date.now() - this.cache.timestamp < this.cache.ttl),
+      scheduleAvailable: !!this.cache.schedule,
+      pricesAvailable: !!this.cache.prices
+    };
+  }
+
+  /**
+   * Очистить кэш
+   */
+  clearCache() {
+    this.cache.schedule = null;
+    this.cache.prices = null;
+    this.cache.timestamp = 0;
+    console.log('🧹 Кэш парсера очищен');
   }
 }
 
