@@ -1,19 +1,22 @@
 {
   "name": "cosmo_info",
-  "version": "2.0.0",
-  "description": "CosmoDance чат-ассистент с актуальным расписанием",
+  "version": "2.1.0",
+  "description": "CosmoDance чат-ассистент с парсингом расписания и цен",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "prod": "NODE_ENV=production node server.js"
+    "prod": "NODE_ENV=production node server.js",
+    "test": "node -e \"import('./cosmo-parser.js').then(m => new m.default().getSchedule().then(d => console.log('✅ Парсер работает:', Object.keys(d))))\"",
+    "clear-cache": "node -e \"import('./cosmo-parser.js').then(m => new m.default().clearCache())\""
   },
   "keywords": [
     "chatbot",
     "dance-studio",
     "cosmodance",
-    "schedule-parser"
+    "schedule-parser",
+    "price-parser"
   ],
   "author": "CosmoDance Team",
   "license": "MIT",
