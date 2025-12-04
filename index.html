@@ -1,623 +1,958 @@
 <!DOCTYPE html>
 <html lang="ru">
-  <head>
-    <meta charset="UTF-8" />
-    <title>CosmoDance — чат-бот</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
-
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CosmoDance AI Assistant 🤖</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💃</text></svg>">
+  <style>
+    :root {
+      --primary: #8a2be2;
+      --secondary: #ff6b9d;
+      --dark: #0f0f1e;
+      --darker: #070710;
+      --light: #f8f9fa;
+      --gray: #6c757d;
+      --success: #20c997;
+      --danger: #ff6b6b;
+      --warning: #ffc107;
+    }
+    
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: linear-gradient(135deg, var(--darker) 0%, var(--dark) 100%);
+      color: var(--light);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+      line-height: 1.6;
+    }
+    
+    .chat-container {
+      width: 100%;
+      max-width: 900px;
+      height: 90vh;
+      background: rgba(15, 15, 30, 0.95);
+      backdrop-filter: blur(10px);
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      border: 1px solid rgba(138, 43, 226, 0.2);
+      display: flex;
+      flex-direction: column;
+    }
+    
+    /* Header */
+    .header {
+      background: linear-gradient(90deg, var(--primary), var(--secondary));
+      padding: 20px 30px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .logo-icon {
+      font-size: 28px;
+      animation: dance 2s infinite;
+    }
+    
+    @keyframes dance {
+      0%, 100% { transform: rotate(0deg); }
+      25% { transform: rotate(-10deg); }
+      75% { transform: rotate(10deg); }
+    }
+    
+    .logo-text h1 {
+      font-size: 22px;
+      font-weight: 700;
+      background: linear-gradient(90deg, #fff, #ffd6e7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .logo-text p {
+      font-size: 12px;
+      opacity: 0.9;
+      margin-top: 2px;
+    }
+    
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      background: rgba(0, 0, 0, 0.3);
+      padding: 6px 12px;
+      border-radius: 20px;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--success);
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    /* Messages */
+    .messages-container {
+      flex: 1;
+      overflow-y: auto;
+      padding: 25px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    
+    .message {
+      max-width: 80%;
+      animation: slideIn 0.3s ease;
+    }
+    
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .message.user {
+      align-self: flex-end;
+    }
+    
+    .message.bot {
+      align-self: flex-start;
+    }
+    
+    .message-content {
+      padding: 16px 20px;
+      border-radius: 20px;
+      position: relative;
+      word-wrap: break-word;
+      white-space: pre-wrap;
+    }
+    
+    .message.user .message-content {
+      background: linear-gradient(135deg, var(--primary), #6a11cb);
+      color: white;
+      border-bottom-right-radius: 4px;
+    }
+    
+    .message.bot .message-content {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(138, 43, 226, 0.3);
+      border-bottom-left-radius: 4px;
+    }
+    
+    .message-time {
+      font-size: 11px;
+      opacity: 0.6;
+      margin-top: 6px;
+      text-align: right;
+    }
+    
+    .typing-indicator {
+      display: flex;
+      gap: 4px;
+      padding: 10px 20px;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 20px;
+      align-self: flex-start;
+      margin-bottom: 10px;
+    }
+    
+    .typing-dot {
+      width: 8px;
+      height: 8px;
+      background: var(--primary);
+      border-radius: 50%;
+      animation: typing 1.4s infinite;
+    }
+    
+    .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+    
+    @keyframes typing {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-8px); }
+    }
+    
+    /* Input */
+    .input-container {
+      padding: 20px 30px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      background: rgba(7, 7, 16, 0.8);
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    
+    .input-wrapper {
+      flex: 1;
+      position: relative;
+    }
+    
+    #userInput {
+      width: 100%;
+      padding: 16px 20px;
+      padding-right: 50px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 2px solid rgba(138, 43, 226, 0.3);
+      border-radius: 50px;
+      color: white;
+      font-size: 15px;
+      outline: none;
+      transition: all 0.3s;
+    }
+    
+    #userInput:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(138, 43, 226, 0.2);
+    }
+    
+    #userInput::placeholder {
+      color: rgba(255, 255, 255, 0.4);
+    }
+    
+    .char-count {
+      position: absolute;
+      right: 15px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 12px;
+      opacity: 0.6;
+    }
+    
+    #sendBtn {
+      background: linear-gradient(135deg, var(--primary), var(--secondary));
+      border: none;
+      color: white;
+      width: 50px;
+      height: 50px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      transition: all 0.3s;
+      flex-shrink: 0;
+    }
+    
+    #sendBtn:hover:not(:disabled) {
+      transform: scale(1.05);
+      box-shadow: 0 0 20px rgba(138, 43, 226, 0.4);
+    }
+    
+    #sendBtn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    /* Controls */
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 15px;
+      padding: 15px 30px;
+      background: rgba(7, 7, 16, 0.6);
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    
+    .control-btn {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.7);
+      padding: 10px 20px;
+      border-radius: 50px;
+      cursor: pointer;
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.3s;
+    }
+    
+    .control-btn:hover {
+      background: rgba(138, 43, 226, 0.2);
+      color: white;
+      border-color: var(--primary);
+    }
+    
+    /* Suggestions */
+    .suggestions {
+      padding: 20px 30px;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      background: rgba(7, 7, 16, 0.4);
+    }
+    
+    .suggestions-title {
+      font-size: 13px;
+      opacity: 0.7;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    
+    .suggestions-buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    
+    .suggestion-btn {
+      background: rgba(138, 43, 226, 0.15);
+      border: 1px solid rgba(138, 43, 226, 0.3);
+      color: rgba(255, 255, 255, 0.9);
+      padding: 10px 18px;
+      border-radius: 50px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.3s;
+      flex: 1;
+      min-width: 120px;
+      text-align: center;
+    }
+    
+    .suggestion-btn:hover {
+      background: rgba(138, 43, 226, 0.3);
+      transform: translateY(-2px);
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    ::-webkit-scrollbar-track {
+      background: rgba(255, 255, 255, 0.05);
+    }
+    
+    ::-webkit-scrollbar-thumb {
+      background: rgba(138, 43, 226, 0.5);
+      border-radius: 4px;
+    }
+    
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(138, 43, 226, 0.7);
+    }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
       body {
-        margin: 0;
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-          sans-serif;
-        background: #0b0b12;
-        color: #ffffff;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 100vh;
-        padding: 16px;
-      }
-
-      .chat-wrapper {
-        width: 100%;
-        max-width: 420px;
-        height: 90vh;
-        max-height: 720px;
-        background: #141421;
-        border-radius: 16px;
-        box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-      }
-
-      .chat-header {
-        padding: 12px 16px;
-        background: linear-gradient(135deg, #6b4bff, #c23fff);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-
-      .chat-header-title {
-        font-size: 16px;
-        font-weight: 600;
-      }
-
-      .chat-header-sub {
-        font-size: 12px;
-        opacity: 0.9;
-      }
-
-      .chat-header-right {
-        font-size: 11px;
-        opacity: 0.9;
-      }
-
-      .chat-messages {
-        flex: 1;
-        padding: 12px;
-        overflow-y: auto;
-        background: radial-gradient(circle at top, #272744 0, #141421 55%);
-      }
-
-      .bubble {
-        max-width: 80%;
-        padding: 8px 10px;
-        margin-bottom: 8px;
-        border-radius: 12px;
-        font-size: 14px;
-        line-height: 1.4;
-        white-space: pre-wrap;
-        word-wrap: break-word;
-      }
-
-      .bubble.user {
-        background: #3a3a55;
-        margin-left: auto;
-        border-bottom-right-radius: 2px;
-      }
-
-      .bubble.bot {
-        background: #1d1d2b;
-        margin-right: auto;
-        border-bottom-left-radius: 2px;
-      }
-
-      .bubble.system {
-        background: transparent;
-        color: #c3c3ff;
-        font-size: 12px;
-        text-align: center;
-        margin: 8px auto;
-      }
-
-      .chat-input-wrapper {
         padding: 10px;
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
-        background: #141421;
-        display: flex;
-        gap: 8px;
-        align-items: center;
-      }
-
-      .chat-input-wrapper input {
-        flex: 1;
-        padding: 8px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        background: #0c0c16;
-        color: #ffffff;
-        font-size: 14px;
-        outline: none;
-        transition: border-color 0.2s;
-      }
-
-      .chat-input-wrapper input:focus {
-        border-color: #6b4bff;
-      }
-
-      .chat-input-wrapper input:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      .chat-input-wrapper button {
-        padding: 8px 12px;
-        border-radius: 999px;
-        border: none;
-        background: #6b4bff;
-        color: #ffffff;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: opacity 0.2s, transform 0.1s;
-      }
-
-      .chat-input-wrapper button:hover {
-        opacity: 0.9;
-      }
-
-      .chat-input-wrapper button:active {
-        transform: translateY(1px);
-      }
-
-      .chat-input-wrapper button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-        transform: none;
-      }
-
-      .chat-footer {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 6px 10px;
-        font-size: 11px;
-        color: rgba(255, 255, 255, 0.6);
-        background: #12121f;
-      }
-
-      .chat-footer button {
-        border: none;
-        background: transparent;
-        color: #c3c3ff;
-        font-size: 11px;
-        cursor: pointer;
-        text-decoration: underline;
-        padding: 2px 4px;
-      }
-
-      .chat-footer button:hover {
-        opacity: 0.8;
-      }
-
-      .typing-indicator {
-        font-size: 11px;
-        color: #a0a0ff;
-        margin-bottom: 6px;
-        padding-left: 12px;
-        font-style: italic;
-      }
-
-      .error-message {
-        font-size: 12px;
-        color: #ff9a9a;
-        margin: 4px 12px 8px;
-        padding: 6px 8px;
-        background: rgba(255, 0, 0, 0.1);
-        border-radius: 6px;
-        display: none;
-      }
-
-      ::-webkit-scrollbar {
-        width: 6px;
       }
       
-      ::-webkit-scrollbar-thumb {
-        background: #3a3a55;
-        border-radius: 3px;
+      .chat-container {
+        height: 95vh;
+        border-radius: 20px;
       }
       
-      ::-webkit-scrollbar-track {
-        background: transparent;
+      .header {
+        padding: 15px 20px;
       }
-    </style>
-  </head>
-  <body>
-    <div class="chat-wrapper">
-      <div class="chat-header">
-        <div>
-          <div class="chat-header-title">CosmoDance бот</div>
-          <div class="chat-header-sub">Вопросы о студии и расписании</div>
+      
+      .messages-container {
+        padding: 15px;
+      }
+      
+      .input-container, .controls, .suggestions {
+        padding: 15px 20px;
+      }
+      
+      .message {
+        max-width: 90%;
+      }
+      
+      .suggestions-buttons {
+        flex-direction: column;
+      }
+      
+      .suggestion-btn {
+        min-width: 100%;
+      }
+    }
+    
+    /* Welcome message */
+    .welcome-message {
+      background: linear-gradient(135deg, rgba(138, 43, 226, 0.1), rgba(255, 107, 157, 0.1));
+      border: 1px solid rgba(138, 43, 226, 0.2);
+      border-radius: 20px;
+      padding: 25px;
+      margin-bottom: 20px;
+      animation: fadeIn 0.5s ease;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    
+    .welcome-title {
+      font-size: 20px;
+      margin-bottom: 10px;
+      background: linear-gradient(90deg, var(--primary), var(--secondary));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .welcome-features {
+      list-style: none;
+      margin: 15px 0;
+    }
+    
+    .welcome-features li {
+      padding: 8px 0;
+      padding-left: 25px;
+      position: relative;
+    }
+    
+    .welcome-features li:before {
+      content: "✨";
+      position: absolute;
+      left: 0;
+    }
+    
+    /* Error */
+    .error-message {
+      background: rgba(255, 107, 107, 0.1);
+      border: 1px solid rgba(255, 107, 107, 0.3);
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin: 10px 0;
+      font-size: 13px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">
+        <div class="logo-icon">💃</div>
+        <div class="logo-text">
+          <h1>CosmoDance AI Assistant</h1>
+          <p>Ваш персональный помощник по танцам</p>
         </div>
-        <div class="chat-header-right">AI Assistant</div>
       </div>
-
-      <div id="messages" class="chat-messages">
-        <!-- Сообщения будут добавляться сюда -->
-      </div>
-
-      <div id="typingIndicator" class="typing-indicator" style="display: none;">
-        CosmoDance бот печатает...
-      </div>
-
-      <div id="errorMessage" class="error-message" style="display: none;"></div>
-
-      <div class="chat-footer">
-        <span id="status">Подключение...</span>
-        <button id="resetBtn" type="button">Новый диалог</button>
-      </div>
-
-      <div class="chat-input-wrapper">
-        <input
-          id="userInput"
-          type="text"
-          placeholder="Напишите вопрос о CosmoDance…"
-          disabled
-        />
-        <button id="sendBtn" type="button" disabled>Отправить</button>
+      <div class="status">
+        <div class="status-dot"></div>
+        <span id="statusText">Подключение...</span>
       </div>
     </div>
-
-    <script>
-      // ==================== КОНФИГУРАЦИЯ ====================
-      const TYPING_SPEED = 40; // мс на символ
-      const INACTIVITY_LIMIT_MS = 10 * 60 * 1000; // 10 минут
-      const MAX_MESSAGE_LENGTH = 1000;
-      
-      // ⚠️ ВАЖНО: Замените этот URL на ваш реальный сервер!
-      // Для локального теста: "http://localhost:3000/chat"
-      // Для Render.com: "https://ваш-проект.onrender.com/chat"
-      const API_URL = (() => {
-        const hostname = window.location.hostname;
-        const protocol = window.location.protocol;
+    
+    <!-- Messages -->
+    <div class="messages-container" id="messages">
+      <div class="welcome-message">
+        <h2 class="welcome-title">👋 Приветствую в CosmoDance!</h2>
+        <p>Я ваш AI-помощник, готовый ответить на все вопросы о нашей студии танцев.</p>
         
-        // Локальная разработка
-        if (hostname === 'localhost' || hostname === '127.0.0.1') {
-          return 'http://localhost:3000/chat';
-        }
+        <ul class="welcome-features">
+          <li>📅 Расписание групп и занятия</li>
+          <li>💰 Цены и абонементы</li>
+          <li>📍 Филиалы и как добраться</li>
+          <li>👶 Занятия для детей и взрослых</li>
+          <li>🎭 Направления танцев</li>
+          <li>📝 Запись на пробное занятие</li>
+        </ul>
         
-        // GitHub Pages или подобные хостинги (статичные)
-        if (hostname.includes('github.io') || hostname.includes('netlify.app')) {
-          // ⚠️ УКАЖИТЕ РЕАЛЬНЫЙ URL ВАШЕГО СЕРВЕРА:
-          return 'https://cosmo-info.onrender.com/chat';
-        }
-        
-        // Продакшен (если фронт и бек на одном домене)
-        return '/chat';
-      })();
+        <p>Задайте вопрос или выберите тему ниже ⬇️</p>
+      </div>
+    </div>
+    
+    <!-- Error -->
+    <div class="error-message" id="errorMessage"></div>
+    
+    <!-- Typing -->
+    <div class="typing-indicator" id="typingIndicator" style="display: none;">
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+      <div class="typing-dot"></div>
+    </div>
+    
+    <!-- Suggestions -->
+    <div class="suggestions" id="suggestions">
+      <div class="suggestions-title">Частые вопросы:</div>
+      <div class="suggestions-buttons">
+        <button class="suggestion-btn" data-question="Расскажи о студии CosmoDance">О студии</button>
+        <button class="suggestion-btn" data-question="Какие филиалы есть?">Филиалы</button>
+        <button class="suggestion-btn" data-question="Сколько стоит абонемент?">Цены</button>
+        <button class="suggestion-btn" data-question="Как записаться на пробное?">Пробное занятие</button>
+        <button class="suggestion-btn" data-question="Какие направления танцев есть?">Направления</button>
+        <button class="suggestion-btn" data-question="Есть ли занятия для детей 5 лет?">Для детей</button>
+      </div>
+    </div>
+    
+    <!-- Input -->
+    <div class="input-container">
+      <div class="input-wrapper">
+        <input 
+          type="text" 
+          id="userInput" 
+          placeholder="Напишите ваш вопрос о CosmoDance..."
+          maxlength="500"
+          disabled
+        >
+        <div class="char-count">
+          <span id="charCount">0</span>/500
+        </div>
+      </div>
+      <button id="sendBtn" disabled>➤</button>
+    </div>
+    
+    <!-- Controls -->
+    <div class="controls">
+      <button class="control-btn" id="clearBtn">
+        <span>🗑️</span> Новый диалог
+      </button>
+      <button class="control-btn" id="copyBtn">
+        <span>📋</span> Копировать чат
+      </button>
+      <button class="control-btn" id="historyBtn">
+        <span>📚</span> История
+      </button>
+      <button class="control-btn" id="helpBtn">
+        <span>❓</span> Помощь
+      </button>
+    </div>
+  </div>
 
-      // ==================== ЭЛЕМЕНТЫ DOM ====================
-      const messagesEl = document.getElementById("messages");
-      const userInput = document.getElementById("userInput");
-      const sendBtn = document.getElementById("sendBtn");
-      const resetBtn = document.getElementById("resetBtn");
-      const statusEl = document.getElementById("status");
-      const typingIndicator = document.getElementById("typingIndicator");
-      const errorMessageEl = document.getElementById("errorMessage");
+  <script>
+    // ==================== КОНФИГУРАЦИЯ ====================
+    const CONFIG = {
+      API_URL: window.location.hostname.includes('render.com') 
+        ? '/chat' 
+        : 'http://localhost:10000/chat',
+      TYPING_SPEED: 30,
+      MAX_HISTORY: 50,
+      SESSION_TIMEOUT: 30 * 60 * 1000, // 30 минут
+      STORAGE_KEY: 'cosmodance_chat_v3',
+      SESSION_KEY: 'cosmodance_session'
+    };
 
-      // ==================== СОСТОЯНИЕ ====================
-      let history = []; // [{role:'user'|'assistant', content:'...'}]
-      let isBotTyping = false;
-      let typingTimeout = null;
+    // ==================== СОСТОЯНИЕ ====================
+    let state = {
+      messages: [],
+      isTyping: false,
+      conversationId: generateId(),
+      sessionStart: Date.now(),
+      requestCount: 0
+    };
 
-      const STORAGE_KEY = "cosmo_chat_history_v1";
-      const STORAGE_LAST_ACTIVITY = "cosmo_chat_last_activity";
+    // ==================== ЭЛЕМЕНТЫ ====================
+    const elements = {
+      messages: document.getElementById('messages'),
+      userInput: document.getElementById('userInput'),
+      sendBtn: document.getElementById('sendBtn'),
+      statusText: document.getElementById('statusText'),
+      typingIndicator: document.getElementById('typingIndicator'),
+      errorMessage: document.getElementById('errorMessage'),
+      charCount: document.getElementById('charCount'),
+      clearBtn: document.getElementById('clearBtn'),
+      copyBtn: document.getElementById('copyBtn'),
+      historyBtn: document.getElementById('historyBtn'),
+      helpBtn: document.getElementById('helpBtn'),
+      suggestions: document.getElementById('suggestions')
+    };
 
-      // ==================== ФУНКЦИИ ====================
+    // ==================== УТИЛИТЫ ====================
+    function generateId() {
+      return Date.now().toString(36) + Math.random().toString(36).substr(2);
+    }
 
-      function showError(message) {
-        errorMessageEl.textContent = message;
-        errorMessageEl.style.display = 'block';
-        setTimeout(() => {
-          errorMessageEl.style.display = 'none';
-        }, 5000);
+    function formatTime(date = new Date()) {
+      return date.toLocaleTimeString('ru-RU', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+
+    function debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func(...args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    }
+
+    // ==================== УПРАВЛЕНИЕ СОСТОЯНИЕМ ====================
+    function saveState() {
+      try {
+        const data = {
+          messages: state.messages.slice(-CONFIG.MAX_HISTORY),
+          conversationId: state.conversationId,
+          sessionStart: state.sessionStart
+        };
+        localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(data));
+      } catch (e) {
+        console.warn('Не удалось сохранить состояние:', e);
       }
+    }
 
-      function setStatus(text) {
-        statusEl.textContent = text;
-      }
-
-      function scrollToBottom() {
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-      }
-
-      function saveHistory() {
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
-          localStorage.setItem(STORAGE_LAST_ACTIVITY, String(Date.now()));
-        } catch (e) {
-          console.warn("Не удалось сохранить историю:", e);
-        }
-      }
-
-      function loadHistory() {
-        try {
-          const last = localStorage.getItem(STORAGE_LAST_ACTIVITY);
-          if (last) {
-            const diff = Date.now() - Number(last);
-            if (diff > INACTIVITY_LIMIT_MS) {
-              localStorage.removeItem(STORAGE_KEY);
-              localStorage.removeItem(STORAGE_LAST_ACTIVITY);
-              return;
-            }
-          }
-
-          const raw = localStorage.getItem(STORAGE_KEY);
-          if (!raw) return;
-          const arr = JSON.parse(raw);
-          if (Array.isArray(arr)) {
-            history = arr.slice(-20); // Ограничиваем историю
-            history.forEach((m) => {
-              addMessageBubble(m.role, m.content, false);
-            });
+    function loadState() {
+      try {
+        const saved = localStorage.getItem(CONFIG.STORAGE_KEY);
+        if (saved) {
+          const data = JSON.parse(saved);
+          
+          // Проверяем не устарела ли сессия
+          const sessionAge = Date.now() - data.sessionStart;
+          if (sessionAge < CONFIG.SESSION_TIMEOUT) {
+            state.messages = data.messages || [];
+            state.conversationId = data.conversationId || generateId();
+            state.sessionStart = data.sessionStart;
+            
+            // Восстанавливаем сообщения
+            state.messages.forEach(msg => addMessageToUI(msg));
             scrollToBottom();
+            
+            if (state.messages.length > 0) {
+              elements.suggestions.style.display = 'none';
+            }
+          } else {
+            clearState();
           }
-        } catch (e) {
-          console.warn("Не удалось загрузить историю:", e);
         }
+      } catch (e) {
+        console.warn('Не удалось загрузить состояние:', e);
+        clearState();
       }
+    }
 
-      function addMessageBubble(role, text, save = true) {
-        const div = document.createElement("div");
-        if (role === "system") {
-          div.className = "bubble system";
-        } else {
-          div.className = "bubble " + (role === "user" ? "user" : "bot");
+    function clearState() {
+      state.messages = [];
+      state.conversationId = generateId();
+      state.sessionStart = Date.now();
+      state.requestCount = 0;
+      
+      elements.messages.innerHTML = '';
+      elements.suggestions.style.display = 'block';
+      saveState();
+      
+      // Добавляем приветственное сообщение
+      const welcomeMsg = document.querySelector('.welcome-message');
+      if (welcomeMsg) {
+        elements.messages.appendChild(welcomeMsg.cloneNode(true));
+      }
+      
+      showStatus('Готов к работе');
+    }
+
+    // ==================== UI ФУНКЦИИ ====================
+    function addMessageToUI(message) {
+      const messageEl = document.createElement('div');
+      messageEl.className = `message ${message.role}`;
+      
+      const contentEl = document.createElement('div');
+      contentEl.className = 'message-content';
+      contentEl.textContent = message.content;
+      
+      const timeEl = document.createElement('div');
+      timeEl.className = 'message-time';
+      timeEl.textContent = formatTime(new Date(message.timestamp));
+      
+      messageEl.appendChild(contentEl);
+      messageEl.appendChild(timeEl);
+      elements.messages.appendChild(messageEl);
+      
+      scrollToBottom();
+    }
+
+    function addMessage(role, content) {
+      const message = {
+        role,
+        content,
+        timestamp: Date.now(),
+        id: generateId()
+      };
+      
+      state.messages.push(message);
+      addMessageToUI(message);
+      saveState();
+    }
+
+    function showTyping(show) {
+      state.isTyping = show;
+      elements.typingIndicator.style.display = show ? 'flex' : 'none';
+      scrollToBottom();
+    }
+
+    function showStatus(text, type = 'info') {
+      elements.statusText.textContent = text;
+      const dot = elements.statusText.previousElementSibling;
+      
+      dot.style.background = 
+        type === 'error' ? 'var(--danger)' :
+        type === 'warning' ? 'var(--warning)' :
+        type === 'success' ? 'var(--success)' : '#20c997';
+    }
+
+    function showError(text, duration = 5000) {
+      elements.errorMessage.textContent = text;
+      elements.errorMessage.style.display = 'block';
+      
+      setTimeout(() => {
+        elements.errorMessage.style.display = 'none';
+      }, duration);
+    }
+
+    function scrollToBottom() {
+      setTimeout(() => {
+        elements.messages.scrollTop = elements.messages.scrollHeight;
+      }, 100);
+    }
+
+    function updateCharCount() {
+      const length = elements.userInput.value.length;
+      elements.charCount.textContent = length;
+      
+      if (length > 400) {
+        elements.charCount.style.color = 'var(--warning)';
+      } else if (length > 450) {
+        elements.charCount.style.color = 'var(--danger)';
+      } else {
+        elements.charCount.style.color = 'rgba(255, 255, 255, 0.6)';
+      }
+    }
+
+    // ==================== API ВЗАИМОДЕЙСТВИЕ ====================
+    async function checkHealth() {
+      try {
+        const response = await fetch('/health', { timeout: 5000 });
+        if (response.ok) {
+          const data = await response.json();
+          showStatus(`Онлайн • v${data.version}`, 'success');
+          elements.userInput.disabled = false;
+          elements.sendBtn.disabled = false;
+          elements.userInput.placeholder = 'Напишите ваш вопрос о CosmoDance...';
+          return true;
         }
-        div.textContent = text;
-        messagesEl.appendChild(div);
+      } catch (e) {
+        console.warn('Health check failed:', e);
+      }
+      
+      showStatus('Сервер недоступен', 'error');
+      elements.userInput.disabled = true;
+      elements.sendBtn.disabled = true;
+      elements.userInput.placeholder = 'Сервер недоступен. Попробуйте позже...';
+      return false;
+    }
+
+    async function sendMessage() {
+      const text = elements.userInput.value.trim();
+      if (!text || state.isTyping) return;
+      
+      // Очищаем input
+      elements.userInput.value = '';
+      updateCharCount();
+      
+      // Добавляем сообщение пользователя
+      addMessage('user', text);
+      elements.suggestions.style.display = 'none';
+      
+      // Показываем индикатор набора
+      showTyping(true);
+      showStatus('Бот думает...', 'warning');
+      
+      // Отправляем запрос
+      state.requestCount++;
+      
+      try {
+        const response = await fetch(CONFIG.API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            conversationId: state.conversationId
+          })
+        });
         
-        if (save && (role === "user" || role === "assistant")) {
-          history.push({
-            role: role === "assistant" ? "assistant" : "user",
-            content: text,
-          });
-          saveHistory();
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.error || 'Ошибка сервера');
         }
         
-        scrollToBottom();
+        // Анимированный вывод ответа
+        showTyping(false);
+        await typeMessage(data.reply);
+        
+        showStatus('Онлайн', 'success');
+        
+      } catch (error) {
+        console.error('Ошибка отправки:', error);
+        showTyping(false);
+        
+        let errorText = 'Извините, произошла ошибка. Попробуйте позже.';
+        
+        if (error.message.includes('timeout')) {
+          errorText = 'Время ожидания истекло. Пожалуйста, попробуйте снова.';
+        } else if (error.message.includes('quota')) {
+          errorText = 'Превышен лимит запросов. Попробуйте через час.';
+        }
+        
+        addMessage('bot', errorText);
+        showError(errorText);
+        showStatus('Ошибка соединения', 'error');
       }
+    }
 
-      function showTyping(show) {
-        typingIndicator.style.display = show ? 'block' : 'none';
-        if (show) scrollToBottom();
-      }
-
-      async function showBotReplyAnimated(text) {
-        // Создаем пузырь для бота
-        const bubble = document.createElement("div");
-        bubble.className = "bubble bot";
-        bubble.textContent = "";
-        messagesEl.appendChild(bubble);
-        scrollToBottom();
-
+    async function typeMessage(text) {
+      return new Promise(resolve => {
+        const message = {
+          role: 'bot',
+          content: '',
+          timestamp: Date.now(),
+          id: generateId()
+        };
+        
+        state.messages.push(message);
+        
+        const messageEl = document.createElement('div');
+        messageEl.className = 'message bot';
+        
+        const contentEl = document.createElement('div');
+        contentEl.className = 'message-content';
+        
+        const timeEl = document.createElement('div');
+        timeEl.className = 'message-time';
+        timeEl.textContent = formatTime(new Date(message.timestamp));
+        
+        messageEl.appendChild(contentEl);
+        messageEl.appendChild(timeEl);
+        elements.messages.appendChild(messageEl);
+        
         let i = 0;
         const len = text.length;
-
-        await new Promise((resolve) => {
-          function typeNext() {
-            if (i >= len) {
-              resolve();
-              return;
-            }
-            bubble.textContent += text[i];
-            i += 1;
-            if (i % 10 === 0 || i >= len) {
-              scrollToBottom();
-            }
-            typingTimeout = setTimeout(typeNext, TYPING_SPEED);
-          }
-          typeNext();
-        });
-
-        // Сохраняем полный ответ
-        history.push({ role: "assistant", content: text });
-        saveHistory();
-        scrollToBottom();
-      }
-
-      async function sendMessage() {
-        if (isBotTyping) return;
-
-        const text = userInput.value.trim();
-        if (!text) return;
-
-        // Проверка длины сообщения
-        if (text.length > MAX_MESSAGE_LENGTH) {
-          showError(`Сообщение слишком длинное (${text.length} символов). Максимум: ${MAX_MESSAGE_LENGTH}`);
-          return;
-        }
-
-        addMessageBubble("user", text, true);
-        userInput.value = "";
-
-        // Блокируем интерфейс
-        isBotTyping = true;
-        sendBtn.disabled = true;
-        userInput.disabled = true;
-        sendBtn.textContent = "Отправка...";
-        setStatus("Бот печатает...");
-        showTyping(true);
-
-        try {
-          const payload = {
-            message: text,
-            history: history,
-          };
-
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-          const response = await fetch(API_URL, {
-            method: "POST",
-            headers: { 
-              "Content-Type": "application/json",
-              "Accept": "application/json"
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal
-          });
-
-          clearTimeout(timeoutId);
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-          }
-
-          const data = await response.json();
-          const reply = data.reply || "Извините, не удалось получить ответ.";
-
-          showTyping(false);
-          await showBotReplyAnimated(reply);
-          
-        } catch (e) {
-          console.error("Ошибка отправки:", e);
-          showTyping(false);
-          
-          let errorMessage = "Извините, произошла ошибка. ";
-          
-          if (e.name === 'AbortError') {
-            errorMessage = "Превышено время ожидания ответа. Попробуйте позже.";
-          } else if (e.message.includes('Failed to fetch')) {
-            errorMessage = "Нет связи с сервером. Проверьте интернет-соединение.";
-          } else if (e.message.includes('HTTP 429')) {
-            errorMessage = "Слишком много запросов. Пожалуйста, подождите.";
-          } else if (e.message.includes('HTTP 5')) {
-            errorMessage = "Ошибка на сервере. Попробуйте позже.";
-          }
-          
-          addMessageBubble("assistant", errorMessage + " Код ошибки: " + e.message, true);
-          showError(errorMessage);
-          
-        } finally {
-          // Восстанавливаем интерфейс
-          isBotTyping = false;
-          sendBtn.disabled = false;
-          userInput.disabled = false;
-          sendBtn.textContent = "Отправить";
-          userInput.focus();
-          setStatus("Онлайн");
-        }
-      }
-
-      function resetChat() {
-        if (isBotTyping) {
-          if (!confirm("Бот сейчас отвечает. Вы уверены, что хотите начать новый диалог?")) {
+        
+        function typeNext() {
+          if (i >= len) {
+            message.content = text;
+            saveState();
+            resolve();
             return;
           }
-        }
-        
-        history = [];
-        isBotTyping = false;
-        clearTimeout(typingTimeout);
-        typingTimeout = null;
-        messagesEl.innerHTML = "";
-        
-        try {
-          localStorage.removeItem(STORAGE_KEY);
-          localStorage.removeItem(STORAGE_LAST_ACTIVITY);
-        } catch (e) {
-          console.warn("Не удалось очистить хранилище:", e);
-        }
-        
-        setStatus("Онлайн");
-        addMessageBubble(
-          "system",
-          "👋 Здравствуйте! Я чат-бот студии танцев CosmoDance.\n\n" +
-          "Я помогу вам с:\n" +
-          "• Расписанием занятий\n" +
-          "• Стоимостью и абонементами\n" +
-          "• Выбором направления\n" +
-          "• Записью на пробное занятие\n" +
-          "• Ответами на частые вопросы\n\n" +
-          "Задайте ваш вопрос о студии CosmoDance!",
-          false
-        );
-        
-        userInput.focus();
-      }
-
-      function checkServerHealth() {
-        const healthUrl = API_URL.replace('/chat', '/health');
-        
-        fetch(healthUrl, { 
-          method: 'GET',
-          headers: { 'Accept': 'application/json' }
-        })
-          .then(response => {
-            if (response.ok) {
-              setStatus("Онлайн");
-              userInput.disabled = false;
-              sendBtn.disabled = false;
-              userInput.placeholder = "Напишите вопрос о CosmoDance…";
-            } else {
-              throw new Error('Сервер не отвечает');
-            }
-          })
-          .catch(error => {
-            console.warn("Сервер недоступен:", error);
-            setStatus("Сервер недоступен");
-            userInput.disabled = true;
-            sendBtn.disabled = true;
-            userInput.placeholder = "Сервер недоступен. Попробуйте позже.";
-            showError("Не удалось подключиться к серверу. Проверьте, запущен ли сервер чата.");
-          });
-      }
-
-      // ==================== ОБРАБОТЧИКИ СОБЫТИЙ ====================
-
-      sendBtn.addEventListener("click", sendMessage);
-
-      userInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          sendMessage();
-        }
-      });
-
-      resetBtn.addEventListener("click", resetChat);
-
-      // Автофокус при клике на поле ввода
-      userInput.addEventListener("focus", () => {
-        userInput.style.borderColor = "#6b4bff";
-      });
-      
-      userInput.addEventListener("blur", () => {
-        userInput.style.borderColor = "rgba(255, 255, 255, 0.14)";
-      });
-
-      // ==================== ИНИЦИАЛИЗАЦИЯ ====================
-
-      window.addEventListener('DOMContentLoaded', () => {
-        // Загружаем историю
-        loadHistory();
-        
-        // Если истории нет, показываем приветствие
-        if (history.length === 0) {
-          addMessageBubble(
-            "system",
-            "👋 Здравствуйте! Я чат-бот студии танцев CosmoDance.\n\n" +
-            "Я помогу вам с:\n" +
-            "• Расписанием занятий\n" +
-            "• Стоимостью и абонементами\n" +
-            "• Выбором направления\n" +
-            "• Записью на пробное занятие\n" +
-            "• Ответами на частые вопросы\n\n" +
-            "Задайте ваш вопрос о студии CosmoDance!",
-            false
-          );
-        }
-        
-        // Проверяем сервер
-        checkServerHealth();
-        
-        // Автофокус
-        userInput.focus();
-        
-        // Автоматический сброс при долгом бездействии
-        setInterval(() => {
-          try {
-            const last = localStorage.getItem(STORAGE_LAST_ACTIVITY);
-            if (last) {
-              const diff = Date.now() - Number(last);
-              if (diff > INACTIVITY_LIMIT_MS && history.length > 0) {
-                console.log("Автосброс из-за бездействия");
-                resetChat();
-              }
-            }
-          } catch (e) {
-            // Игнорируем ошибки
+          
+          // Добавляем символы группами для скорости
+          const chunkSize = Math.random() > 0.8 ? 2 : 1;
+          const end = Math.min(i + chunkSize, len);
+          contentEl.textContent += text.substring(i, end);
+          i = end;
+          
+          // Прокручиваем каждые 10 символов
+          if (i % 10 === 0 || i >= len) {
+            scrollToBottom();
           }
-        }, 60000); // Проверка каждую минуту
+          
+          setTimeout(typeNext, CONFIG.TYPING_SPEED);
+        }
+        
+        typeNext();
       });
-    </script>
-  </body>
+    }
+
+    // ==================== ОБРАБОТЧИКИ СОБЫТИЙ ====================
+    elements.sendBtn.addEventListener('click', sendMessage);
+
+    elements.userInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    elements.userInput.addEventListener('input', debounce(updateCharCount, 100));
+
+    elements.clearBtn.addEventListener('click', () => {
+      if (state.messages.length > 0 && confirm('Начать новый диалог? Текущая история будет удалена.')) {
+        clearState();
+        showError('Диалог очищен', 3000);
+      }
+    });
+
+    elements.copyBtn.addEventListener('click', async () => {
+      const chatText = state.messages.map(m => 
+        `${m.role === 'user' ? 'Вы' : 'Бот'}: ${m.content}`
+      ).join('\n\n');
+      
+      try {
+        await navigator.clipboard.writeText(chatText);
+        showError('Чат скопирован в буфер!', 2000);
+      } catch {
+        showError('Не удалось скопировать', 3000);
+      }
+    });
+
+    elements.historyBtn.addEventListener('click', () => {
+      const count = state.messages.length;
+      showError(`В истории ${count} сообщений`, 3000);
+    });
+
+    elements.helpBtn.addEventListener('click', () => {
+      addMessage('user', 'Что ты умеешь?');
+      setTimeout(() => {
+        addMessage('bot', 'Я могу:\n• Рассказать о студии CosmoDance\n• Показать филиалы и расписание\n• Сообщить цены и абонементы\n• Помочь выбрать направление\n• Ответить на частые вопросы\n• Подсказать как записаться');
+      }, 500);
+    });
+
+    // Обработчики для быстрых вопросов
+    document.querySelectorAll('.suggestion-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        elements.userInput.value = btn.dataset.question;
+        updateCharCount();
+        sendMessage();
+      });
+    });
+
+    // ==================== ИНИЦИАЛИЗАЦИЯ ====================
+    async function init() {
+      // Проверяем здоровье сервера
+      await checkHealth();
+      
+      // Загружаем сохраненное состояние
+      loadState();
+      
+      // Автофокус
+      elements.userInput.focus();
+      
+      // Периодическая проверка здоровья
+      setInterval(checkHealth, 60000); // Каждую минуту
+      
+      // Автоочистка устаревших сессий
+      setInterval(() => {
+        const sessionAge = Date.now() - state.sessionStart;
+        if (sessionAge > CONFIG.SESSION_TIMEOUT && state.messages.length > 0) {
+          clearState();
+          showError('Сессия завершена. Начинаем новый диалог.', 5000);
+        }
+      }, 60000);
+    }
+
+    // Запуск
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
 </html>
