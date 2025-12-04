@@ -1,51 +1,33 @@
-// server.js - ФИНАЛЬНАЯ ВЕРСИЯ С РАСПИСАНИЕМ
+// server.js - CosmoDance Chat Bot v2.0
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
-import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// Импортируем парсер расписания
+// Импортируем наши модули
+import DeepSeekAI from "./deepseek-ai.js";
 import CosmoScheduleParser from "./schedule-parser.js";
 
 dotenv.config();
 
-// ============ ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ============
-const REQUIRED_ENV = ['OPENAI_API_KEY'];
-REQUIRED_ENV.forEach(key => {
-  if (!process.env[key]) {
-    console.error(`❌ Требуется переменная окружения: ${key}`);
-    process.exit(1);
-  }
-});
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ============ ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ ============
+// ============ ИНИЦИАЛИЗАЦИЯ ============
 const app = express();
 
 // Middleware
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type']
-}));
-
+app.use(cors());
 app.use(express.json({ limit: "100kb" }));
+app.use(express.static(__dirname));
 
 // ============ ИНИЦИАЛИЗАЦИЯ СЕРВИСОВ ============
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const aiClient = new DeepSeekAI(process.env.DEEPSEEK_API_KEY);
+const scheduleParser = new CosmoScheduleParser('production');
 
-const scheduleParser = new CosmoScheduleParser(
-  process.env.NODE_ENV === 'development' ? 'development' : 'production'
-);
-
-// ============ ЗАГРУЗКА ДАННЫХ ============
+// ============ ЗАГРУЗКА БАЗЫ ЗНАНИЙ ============
 function loadKnowledge() {
   try {
     const data = fs.readFileSync("knowledge.json", "utf8");
@@ -58,13 +40,17 @@ function loadKnowledge() {
 
 const KNOWLEDGE = loadKnowledge();
 
-// ============ ФУНКЦИИ ДЛЯ РАБОТЫ С ДАННЫМИ ============
+// ============ ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ============
 function buildKnowledgeText() {
   if (!KNOWLEDGE.docs || !Array.isArray(KNOWLEDGE.docs)) {
     return "Информация о студии временно недоступна.";
   }
   
-  return KNOWLEDGE.docs.map(d => `### ${d.title}\n${d.text}`).join("\n\n");
+  let text = "";
+  KNOWLEDGE.docs.forEach(doc => {
+    text += `## ${doc.title}\n${doc.text}\n\n`;
+  });
+  return text;
 }
 
 async function getScheduleContext(branch = null) {
@@ -75,7 +61,7 @@ async function getScheduleContext(branch = null) {
       return "📅 Расписание временно недоступно. Пожалуйста, проверьте на сайте: https://cosmo.su/raspisanie/";
     }
 
-    let scheduleText = "📅 **Актуальное расписание занятий:**\n\n";
+    let scheduleText = "";
     
     // Убираем метаданные из вывода
     const scheduleData = { ...schedule };
@@ -86,19 +72,18 @@ async function getScheduleContext(branch = null) {
     Object.entries(scheduleData).forEach(([branchName, groups]) => {
       if (groups && groups.length > 0) {
         scheduleText += `📍 **${branchName}:**\n`;
-        groups.slice(0, 8).forEach((group, index) => {
+        groups.slice(0, 6).forEach((group, index) => {
           scheduleText += `${index + 1}. ${group}\n`;
         });
         
-        if (groups.length > 8) {
-          scheduleText += `... и еще ${groups.length - 8} групп\n`;
+        if (groups.length > 6) {
+          scheduleText += `... и еще ${groups.length - 6} групп\n`;
         }
         scheduleText += '\n';
       }
     });
 
     scheduleText += "\n🔗 **Полное расписание:** https://cosmo.su/raspisanie/";
-    scheduleText += "\n🕐 **Обновлено:** каждые 2 часа автоматически";
     scheduleText += "\n📞 **Уточнить:** свяжитесь с администратором студии";
 
     return scheduleText;
@@ -114,21 +99,25 @@ const SYSTEM_PROMPT = `Ты — ассистент студии танцев Cos
 Используй информацию из базы знаний для ответов на вопросы.
 Отвечай вежливо, всегда на "вы", дружелюбно и профессионально.
 
-ВАЖНО про расписание:
+ВАЖНЫЕ ПРАВИЛА:
 1. Если спрашивают про расписание — используй актуальные данные из контекста
 2. Если точного времени нет — предложи проверить на сайте или связаться с администратором
 3. При подборе группы учитывай возраст, уровень и филиал
+4. Всегда мотивируй новичков, снимай страхи
+5. Подводи к записи на пробное занятие
 
-Стиль ответов:
+СТИЛЬ ОТВЕТОВ:
 • Структурированные ответы с абзацами
-• Эмодзи для наглядности
+• Эмодзи для наглядности ✨
 • Поддержка и мотивация для новичков
-• Четкие следующий шаги (запись, консультация)`;
+• Четкие следующий шаги (запись, консультация)
+
+ЕСЛИ НЕ ЗНАЕШЬ ОТВЕТ:
+• Честно скажи, что нужно уточнить у администратора
+• Предложи оставить контакты для обратной связи
+• Дай ссылку на сайт с полной информацией`;
 
 // ============ МАРШРУТЫ API ============
-
-// Статика
-app.use(express.static(__dirname));
 
 // Главная страница
 app.get("/", (req, res) => {
@@ -161,8 +150,22 @@ app.post("/chat", async (req, res) => {
     // Формируем контекст с актуальным расписанием
     const knowledgeText = buildKnowledgeText();
     const scheduleText = await getScheduleContext(branchFilter);
+    
+    // Быстрые ответы на частые вопросы (чтобы экономить токены)
+    const quickResponses = {
+      'привет': '👋 Привет! Я чат-бот студии танцев CosmoDance. Чем могу помочь?',
+      'сайт': '🌐 Наш сайт: https://cosmo.su/',
+      'телефон': '📞 Телефон студии: +7 (XXX) XXX-XX-XX',
+      'адрес': '📍 Наши филиалы: Дыбенко, Купчино, Звёздная, Озерки\nПодробнее: https://cosmo.su/филиалы/',
+    };
 
-    // Сообщения для OpenAI
+    for (const [key, response] of Object.entries(quickResponses)) {
+      if (lowerMessage.includes(key)) {
+        return res.json({ reply: response });
+      }
+    }
+
+    // Формируем сообщения для DeepSeek
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "system", content: `### База знаний студии:\n${knowledgeText}` },
@@ -170,49 +173,50 @@ app.post("/chat", async (req, res) => {
       { role: "user", content: userMessage }
     ];
 
-    // Вызов OpenAI
-    const completion = await client.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages,
+    // Вызов DeepSeek API
+    const result = await aiClient.chat(messages, {
       temperature: 0.7,
-      max_tokens: 1000,
+      maxTokens: 800
     });
 
-    const reply = completion.choices?.[0]?.message?.content?.trim() ||
-      "Извините, не удалось сформировать ответ. Пожалуйста, попробуйте еще раз.";
+    console.log(`✅ Ответ сформирован (${result.usage?.total_tokens || '?'} токенов)`);
 
-    console.log(`✅ Ответ отправлен (${reply.length} символов)`);
-
-    res.json({ reply });
+    res.json({ 
+      reply: result.content,
+      tokens: result.usage?.total_tokens || 0
+    });
 
   } catch (error) {
-    console.error("❌ Ошибка обработки запроса:", error);
+    console.error("❌ Ошибка обработки запроса:", error.message);
     
-    let errorMessage = "Извините, произошла ошибка. Попробуйте позже.";
+    let errorMessage = "Извините, произошла ошибка при обработке вашего запроса. ";
     
-    if (error.code === 'insufficient_quota') {
-      errorMessage = "Превышен лимит запросов к AI. Попробуйте через час.";
-    } else if (error.response?.status === 429) {
-      errorMessage = "Слишком много запросов. Пожалуйста, подождите немного.";
+    if (error.message.includes('rate limit')) {
+      errorMessage = "Превышен лимит запросов. Пожалуйста, попробуйте через минуту.";
+    } else if (error.message.includes('insufficient_quota')) {
+      errorMessage = "Лимит запросов исчерпан на сегодня. Попробуйте завтра.";
+    } else if (error.message.includes('Invalid API key')) {
+      errorMessage = "Проблема с подключением к AI. Администратор уведомлен.";
     }
-
+    
+    // Добавляем fallback
+    errorMessage += "\n\n📞 Вы можете связаться с нами напрямую:\n• Сайт: https://cosmo.su/\n• Расписание: https://cosmo.su/raspisanie/";
+    
     res.json({ reply: errorMessage });
   }
 });
 
-// Информация о расписании
+// API для получения расписания
 app.get("/api/schedule", async (req, res) => {
   try {
     const { branch } = req.query;
     const schedule = await scheduleParser.getSchedule(branch);
-    const stats = scheduleParser.getStats();
     
     res.json({
       success: true,
-      schedule: schedule,
-      stats: stats,
-      last_updated: stats.lastUpdate,
-      next_update: stats.nextUpdate
+      data: schedule,
+      last_updated: new Date().toISOString(),
+      source: "https://cosmo.su/raspisanie/"
     });
     
   } catch (error) {
@@ -225,7 +229,7 @@ app.get("/api/schedule", async (req, res) => {
 });
 
 // Статистика и здоровье
-app.get("/health", (req, res) => {
+app.get("/health", async (req, res) => {
   const stats = scheduleParser.getStats();
   
   res.json({
@@ -234,12 +238,16 @@ app.get("/health", (req, res) => {
     version: "2.0",
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "development",
-    data: {
-      knowledge: KNOWLEDGE.docs?.length || 0,
-      schedule_requests: stats.requests,
-      schedule_success_rate: stats.requests > 0 ? 
-        Math.round((stats.successes / stats.requests) * 100) : 0,
-      cache_valid: stats.cacheValid
+    features: {
+      schedule_parser: true,
+      ai_enabled: true,
+      knowledge_base: KNOWLEDGE.docs?.length || 0,
+      deepseek_api: !!process.env.DEEPSEEK_API_KEY
+    },
+    limits: {
+      daily_requests: "1000 (DeepSeek free tier)",
+      schedule_cache: "2 hours",
+      tokens_per_request: "800"
     },
     links: {
       schedule: "https://cosmo.su/raspisanie/",
@@ -249,15 +257,27 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Очистка кэша (админ)
-app.post("/admin/clear-cache", (req, res) => {
-  const { key } = req.body;
-  
-  if (key === process.env.ADMIN_KEY || process.env.NODE_ENV === 'development') {
-    scheduleParser.clearCache();
-    res.json({ success: true, message: "Кэш расписания очищен" });
-  } else {
-    res.status(403).json({ success: false, message: "Доступ запрещен" });
+// Тестовый эндпоинт для проверки AI
+app.get("/test/ai", async (req, res) => {
+  try {
+    const testPrompt = "Привет! Расскажи кратко о студии CosmoDance в двух предложениях";
+    const result = await aiClient.chat([
+      { role: "system", content: "Ты ассистент студии танцев CosmoDance." },
+      { role: "user", content: testPrompt }
+    ]);
+    
+    res.json({
+      success: true,
+      prompt: testPrompt,
+      response: result.content,
+      tokens: result.usage?.total_tokens,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
   }
 });
 
@@ -271,9 +291,9 @@ app.listen(port, host, () => {
   console.log(`📍 Порт: ${port}`);
   console.log(`🌐 Хост: ${host}`);
   console.log(`🔗 URL: http://${host}:${port}`);
-  console.log(`📅 Парсер расписания: АКТИВЕН (обновление каждые 2 часа)`);
-  console.log(`🤖 OpenAI модель: gpt-4o-mini`);
-  console.log(`📚 База знаний: ${KNOWLEDGE.docs?.length || 0} документов`);
+  console.log(`🤖 AI: DeepSeek Chat (активен)`);
+  console.log(`📅 Парсер расписания: АКТИВЕН`);
+  console.log(`🎯 Лимиты: 1000 запросов/день бесплатно`);
   console.log("=".repeat(60));
   
   // Загружаем расписание при старте
@@ -281,7 +301,7 @@ app.listen(port, host, () => {
   scheduleParser.getSchedule().then(() => {
     console.log("✅ Расписание загружено и готово к работе");
   }).catch(error => {
-    console.log("⚠️ Не удалось загрузить расписание при старте:", error.message);
+    console.log("⚠️ Ошибка загрузки расписания:", error.message);
   });
 });
 
