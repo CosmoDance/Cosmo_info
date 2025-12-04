@@ -1,26 +1,18 @@
-// schedule-parser.js - ИСПРАВЛЕННАЯ ВЕРСИЯ
+// schedule-parser.js - Упрощенный парсер расписания
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import fs from 'fs'; // ← ДОБАВЬТЕ ЭТОТ ИМПОРТ!
 
 class CosmoScheduleParser {
   constructor(mode = 'production') {
     this.config = {
       BASE_URL: 'https://cosmo.su/raspisanie/',
       CACHE_TTL: 2 * 60 * 60 * 1000, // 2 часа
-      REQUEST_TIMEOUT: 15000,
-      PARSER_TYPE: 'auto',
-      BRANCHES: [
-        { name: 'Дыбенко', aliases: ['дыбенко'] },
-        { name: 'Купчино', aliases: ['купчино'] },
-        { name: 'Звёздная', aliases: ['звездная', 'звёздная'] },
-        { name: 'Озерки', aliases: ['озерки'] }
-      ]
+      REQUEST_TIMEOUT: 15000
     };
     
     this.mode = mode === 'development' 
-      ? { debug: true, cacheEnabled: false, saveRawHtml: false }
-      : { debug: false, cacheEnabled: true, saveRawHtml: false };
+      ? { debug: true, cacheEnabled: false }
+      : { debug: false, cacheEnabled: true };
     
     // Кэш в памяти
     this.cache = {
@@ -62,11 +54,7 @@ class CosmoScheduleParser {
       this.stats.successes++;
       this.stats.lastUpdate = new Date().toISOString();
       
-      // Логируем успех
-      if (this.mode.debug) {
-        console.log('✅ Расписание успешно обновлено');
-        console.log(`📊 Групп найдено: ${Object.values(scheduleData).flat().length}`);
-      }
+      console.log('✅ Расписание успешно обновлено');
       
       return this.filterByBranch(scheduleData, branch);
       
@@ -74,179 +62,141 @@ class CosmoScheduleParser {
       this.stats.failures++;
       console.error('❌ Ошибка при получении расписания:', error.message);
       
-      // Возвращаем кэш или пустые данные
-      return this.cache.data ? this.filterByBranch(this.cache.data, branch) : {};
+      // Возвращаем кэш или fallback
+      return this.cache.data ? this.filterByBranch(this.cache.data, branch) : this.getFallbackSchedule();
     }
   }
 
   /**
-   * Автоматический выбор и выполнение парсинга
+   * Загрузка и парсинг расписания
    */
   async fetchAndParse() {
-    const { data, url } = await this.fetchWebsite();
-    
-    if (this.mode.saveRawHtml) {
-      this.saveRawData(data, 'last-fetched.html');
-    }
-    
-    const $ = cheerio.load(data);
-    
-    // Автоматическое определение способа парсинга
-    let scheduleData = await this.tryAllParsers($, data);
-    
-    // Добавляем метаданные
-    scheduleData._meta = {
-      source: url,
-      fetched_at: new Date().toISOString(),
-      parser_version: '2.0',
-      next_update: new Date(Date.now() + this.config.CACHE_TTL).toISOString()
-    };
-    
-    return scheduleData;
-  }
-
-  /**
-   * Попробовать все способы парсинга
-   */
-  async tryAllParsers($, rawData) {
-    // Сначала пробуем текстовый парсинг (самый простой)
     try {
-      const result = await this.parseText(rawData);
-      if (Object.keys(result).length > 0) {
-        console.log('✅ Использован текстовый парсер');
-        return result;
-      }
-    } catch (error) {
-      // Игнорируем ошибку, пробуем дальше
-    }
-    
-    // Затем пробуем табличный
-    try {
-      const result = await this.parseTables($);
-      if (Object.keys(result).length > 0) {
-        console.log('✅ Использован табличный парсер');
-        return result;
-      }
-    } catch (error) {
-      // Игнорируем
-    }
-    
-    // Если ничего не нашли, возвращаем базовую структуру
-    console.log('⚠️ Не удалось распарсить расписание');
-    return this.getFallbackSchedule();
-  }
-
-  /**
-   * Текстовый парсинг (самый надежный)
-   */
-  async parseText(rawData) {
-    const schedule = {};
-    
-    // Разбиваем текст на строки
-    const lines = rawData.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-    
-    let currentBranch = null;
-    
-    for (const line of lines) {
-      // Проверяем, начинается ли строка с названия филиала
-      const branchMatch = this.detectBranch(line, true);
-      if (branchMatch) {
-        currentBranch = branchMatch;
-        schedule[currentBranch] = [];
-        continue;
-      }
-      
-      // Если нашли филиал, ищем время занятий
-      if (currentBranch && this.isScheduleLine(line)) {
-        schedule[currentBranch].push(line);
-      }
-    }
-    
-    return schedule;
-  }
-
-  /**
-   * Парсинг таблиц
-   */
-  async parseTables($) {
-    const schedule = {};
-    
-    $('table').each((i, table) => {
-      const tableText = $(table).text().trim();
-      const branchName = this.detectBranch(tableText) || `Филиал_${i + 1}`;
-      
-      schedule[branchName] = [];
-      
-      $(table).find('tr').each((j, row) => {
-        const cells = $(row).find('td, th');
-        if (cells.length >= 2) {
-          const time = $(cells[0]).text().trim();
-          const group = $(cells[1]).text().trim();
-          
-          if (time && group) {
-            schedule[branchName].push(`${time} - ${group}`);
-          }
+      const { data } = await axios.get(this.config.BASE_URL, {
+        timeout: this.config.REQUEST_TIMEOUT,
+        headers: {
+          'User-Agent': 'CosmoDance-Schedule-Parser/2.0',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8'
         }
       });
-    });
-    
-    return schedule;
+
+      const $ = cheerio.load(data);
+      const schedule = {};
+      
+      // Пробуем найти расписание разными способами
+      
+      // Способ 1: Ищем филиалы в тексте
+      const branches = ['Дыбенко', 'Купчино', 'Звёздная', 'Озерки'];
+      const text = $('body').text();
+      
+      branches.forEach(branch => {
+        if (text.includes(branch)) {
+          schedule[branch] = this.extractScheduleForBranch($, branch);
+        }
+      });
+      
+      // Если ничего не нашли, возвращаем fallback
+      if (Object.keys(schedule).length === 0) {
+        console.log('⚠️ Не удалось распарсить расписание, используем fallback');
+        return this.getFallbackSchedule();
+      }
+      
+      // Добавляем метаданные
+      schedule._meta = {
+        source: this.config.BASE_URL,
+        fetched_at: new Date().toISOString(),
+        parser_version: '2.0',
+        next_update: new Date(Date.now() + this.config.CACHE_TTL).toISOString()
+      };
+      
+      return schedule;
+      
+    } catch (error) {
+      console.error('❌ Ошибка парсинга:', error.message);
+      throw error;
+    }
   }
 
   /**
-   * Fallback расписание
+   * Извлечение расписания для конкретного филиала
+   */
+  extractScheduleForBranch($, branchName) {
+    const scheduleItems = [];
+    
+    // Ищем элементы, содержащие название филиала и время
+    $('*').each((i, element) => {
+      const text = $(element).text();
+      if (text.includes(branchName) || $(element).parent().text().includes(branchName)) {
+        // Ищем время в формате ЧЧ:ММ
+        const timeMatches = text.match(/\b\d{1,2}[:.]\d{2}\b/g);
+        if (timeMatches && timeMatches.length > 0) {
+          // Берем контекст вокруг времени
+          const context = text.substring(0, 200).trim();
+          if (context && context.length > 10) {
+            scheduleItems.push(context);
+          }
+        }
+      }
+    });
+    
+    // Если не нашли конкретное расписание, добавляем общую информацию
+    if (scheduleItems.length === 0) {
+      return [
+        `Расписание для филиала ${branchName} доступно на сайте`,
+        `Проверьте: ${this.config.BASE_URL}`,
+        `Или свяжитесь с администратором`
+      ];
+    }
+    
+    // Ограничиваем количество элементов
+    return scheduleItems.slice(0, 10);
+  }
+
+  /**
+   * Fallback расписание (если парсинг не работает)
    */
   getFallbackSchedule() {
     return {
       'Дыбенко': [
-        'Пн, Ср: 18:00-19:00 - Hip-Hop 12+',
-        'Вт, Чт: 19:00-20:00 - Jazz Funk 16+'
+        'Понедельник, Среда: 18:00-19:00 - Hip-Hop 12+ (новички)',
+        'Вторник, Четверг: 19:00-20:00 - Jazz Funk 16+',
+        'Пятница: 17:00-18:00 - Dance Mix 7-9 лет',
+        'Суббота: 12:00-13:00 - Брейк-данс 8-14 лет',
+        'Актуальное расписание: https://cosmo.su/raspisanie/'
       ],
       'Купчино': [
-        'Пн, Ср: 17:30-18:30 - Contemporary 12+',
-        'Вт, Чт: 18:00-19:00 - Shuffle 7+'
+        'Понедельник, Среда: 17:30-18:30 - Contemporary 12+',
+        'Вторник, Четверг: 18:00-19:00 - Shuffle 7+',
+        'Пятница: 19:00-20:00 - Strip Dance 18+',
+        'Суббота: 11:00-12:00 - Детская хореография 4-6',
+        'Актуальное расписание: https://cosmo.su/raspisanie/'
       ],
       'Звёздная': [
-        'Пн, Чт: 19:00-20:00 - High Heels 18+',
-        'Вт, Пт: 18:00-19:00 - Twerk 16+'
+        'Понедельник, Четверг: 19:00-20:00 - High Heels 18+',
+        'Вторник, Пятница: 18:00-19:00 - Twerk 16+',
+        'Среда, Суббота: 17:00-18:00 - Акробатика 10+',
+        'Воскресенье: 12:00-14:00 - Zumba 18+',
+        'Актуальное расписание: https://cosmo.su/raspisanie/'
       ],
       'Озерки': [
-        'Вт, Чт: 18:30-19:30 - Latina Solo 18+',
-        'Пн, Ср: 17:00-18:00 - Dance Mix 8-12'
-      ]
+        'Вторник, Четверг: 18:30-19:30 - Latina Solo 18+',
+        'Понедельник, Среда: 17:00-18:00 - Dance Mix 8-12',
+        'Пятница: 19:00-20:00 - Растяжка 16+',
+        'Суббота: 13:00-14:00 - K-Pop 10+',
+        'Актуальное расписание: https://cosmo.su/raspisanie/'
+      ],
+      _meta: {
+        source: 'fallback',
+        fetched_at: new Date().toISOString(),
+        note: 'Используется fallback расписание. Парсинг с сайта не сработал.'
+      }
     };
   }
 
   /**
    * Вспомогательные методы
    */
-  detectBranch(text, exact = false) {
-    for (const branch of this.config.BRANCHES) {
-      if (exact) {
-        if (branch.aliases.some(alias => 
-          text.toLowerCase().includes(alias.toLowerCase())
-        )) {
-          return branch.name;
-        }
-      } else {
-        if (text.includes(branch.name)) {
-          return branch.name;
-        }
-      }
-    }
-    return null;
-  }
-
-  isScheduleLine(line) {
-    return (
-      (line.includes(':') || line.includes('-')) &&
-      line.length > 10 &&
-      line.length < 150 &&
-      !line.includes('<!') &&
-      !line.includes('function')
-    );
-  }
-
   shouldUseCache() {
     if (!this.cache.data) return false;
     if (!this.mode.cacheEnabled) return false;
@@ -258,33 +208,21 @@ class CosmoScheduleParser {
   filterByBranch(schedule, branch) {
     if (!branch || !schedule) return schedule;
     
-    const branchName = this.detectBranch(branch, true) || branch;
-    return {
-      [branchName]: schedule[branchName] || [],
-      _meta: schedule._meta
-    };
-  }
-
-  async fetchWebsite() {
-    const response = await axios.get(this.config.BASE_URL, {
-      timeout: this.config.REQUEST_TIMEOUT,
-      headers: {
-        'User-Agent': 'CosmoDance-Schedule-Parser/2.0',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
-        'Cache-Control': 'no-cache'
-      }
-    });
+    // Ищем филиал по названию
+    const branchNames = Object.keys(schedule).filter(key => key !== '_meta');
+    const foundBranch = branchNames.find(b => 
+      b.toLowerCase().includes(branch.toLowerCase()) || 
+      branch.toLowerCase().includes(b.toLowerCase())
+    );
     
-    return {
-      data: response.data,
-      url: response.config.url
-    };
-  }
-
-  // ИСПРАВЛЕННЫЙ МЕТОД - ДОБАВЛЕНО async!
-  async saveRawData(data, filename) {
-    fs.writeFileSync(filename, data);
+    if (foundBranch) {
+      return {
+        [foundBranch]: schedule[foundBranch] || [],
+        _meta: schedule._meta
+      };
+    }
+    
+    return schedule;
   }
 
   /**
@@ -296,7 +234,8 @@ class CosmoScheduleParser {
       cacheAge: this.cache.timestamp ? Date.now() - this.cache.timestamp : null,
       cacheValid: this.shouldUseCache(),
       nextUpdate: this.cache.timestamp ? 
-        new Date(this.cache.timestamp + this.cache.ttl).toISOString() : null
+        new Date(this.cache.timestamp + this.cache.ttl).toISOString() : null,
+      scheduleAvailable: !!this.cache.data
     };
   }
 
