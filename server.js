@@ -1,4 +1,4 @@
-// server.js - CosmoDance Chat Bot v2.1
+// server.js - CosmoDance Chat Bot v2.2
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -55,13 +55,14 @@ function buildKnowledgeText() {
 
 async function getScheduleContext(branch = null) {
   try {
-    const schedule = await cosmoParser.getSchedule();
+    // Получаем ОЧИЩЕННОЕ расписание для клиентов (только для новичков)
+    const schedule = await cosmoParser.getClientSchedule(branch);
     
     if (!schedule || Object.keys(schedule).length === 0) {
       return "📅 Расписание временно недоступно. Пожалуйста, проверьте на сайте: https://cosmo.su/raspisanie/";
     }
 
-    let scheduleText = "## 📅 Актуальное расписание занятий\n\n";
+    let scheduleText = "## 📅 Расписание занятий (группы для начинающих)\n\n";
     
     // Убираем метаданные из вывода
     const scheduleData = { ...schedule };
@@ -71,7 +72,7 @@ async function getScheduleContext(branch = null) {
 
     // Если запросили конкретный филиал
     if (branch) {
-      const branchNames = Object.keys(scheduleData).filter(k => k !== '_meta');
+      const branchNames = Object.keys(scheduleData).filter(k => !k.startsWith('_'));
       const foundBranch = branchNames.find(b => 
         b.toLowerCase().includes(branch.toLowerCase()) || 
         branch.toLowerCase().includes(b.toLowerCase())
@@ -86,27 +87,30 @@ async function getScheduleContext(branch = null) {
         scheduleText += `### ⚠️ Филиал "${branch}" не найден\n\n`;
         scheduleText += "**Доступные филиалы:**\n";
         branchNames.forEach(b => {
-          if (b !== 'Информация' && b !== 'Филиалы') {
-            scheduleText += `• ${b}\n`;
-          }
+          scheduleText += `• ${b}\n`;
         });
       }
     } else {
       // Показываем все филиалы
       Object.entries(scheduleData).forEach(([branchName, items]) => {
-        if (branchName !== 'Информация' && branchName !== 'Филиалы' && items && items.length > 0) {
+        if (items && items.length > 0) {
           scheduleText += `### 📍 ${branchName}\n\n`;
-          items.slice(0, 5).forEach((item, index) => {
+          items.slice(0, 4).forEach((item, index) => {
             scheduleText += `${index + 1}. ${item}\n`;
           });
+          
+          if (items.length > 4) {
+            scheduleText += `... и ещё ${items.length - 4} групп\n`;
+          }
           scheduleText += '\n';
         }
       });
     }
 
-    scheduleText += "\n---\n";
-    scheduleText += "🔗 **Актуальное расписание:** https://cosmo.su/raspisanie/\n";
-    scheduleText += "📞 **Для уточнения:** свяжитесь с администратором студии\n";
+    scheduleText += "---\n";
+    scheduleText += "🎯 **Все группы для начинающих**\n";
+    scheduleText += "📅 **Актуальное расписание:** https://cosmo.su/raspisanie/\n";
+    scheduleText += "📞 **Запись:** свяжитесь с администратором\n";
 
     return scheduleText;
 
@@ -129,14 +133,20 @@ async function getPricesContext() {
     Object.entries(prices).forEach(([category, content], index) => {
       if (category !== 'Информация' && content) {
         pricesText += `### ${category}\n`;
-        pricesText += `${content}\n\n`;
+        
+        // Очищаем длинный текст
+        if (content.length > 300) {
+          pricesText += `${content.substring(0, 300)}...\n\n`;
+        } else {
+          pricesText += `${content}\n\n`;
+        }
       }
     });
 
-    pricesText += "\n---\n";
+    pricesText += "---\n";
+    pricesText += "💳 **Оплата:** наличные, карта, онлайн\n";
+    pricesText += "🎁 **Скидки:** семейные, студентам, при покупке 2+ абонементов\n";
     pricesText += "🔗 **Актуальные цены:** https://cosmo.su/prices/\n";
-    pricesText += "💳 **Оплата:** наличные, карта, перевод\n";
-    pricesText += "🎁 **Есть скидки:** семейные, для студентов\n";
 
     return pricesText;
 
@@ -146,22 +156,26 @@ async function getPricesContext() {
   }
 }
 
-// ============ СИСТЕМНЫЙ ПРОМПТ ============
+// ============ СИСТЕМНЫЙ ПРОМПТ (ОБНОВЛЕННЫЙ) ============
 const SYSTEM_PROMPT = `Ты — ассистент студии танцев CosmoDance в Санкт-Петербурге.
 Используй информацию из базы знаний для ответов на вопросы.
 Отвечай вежливо, всегда на "вы", дружелюбно и профессионально.
 
-ВАЖНЫЕ ПРАВИЛА:
-1. Если спрашивают про расписание — используй актуальные данные из контекста
-2. Если спрашивают про цены — используй информацию о ценах из контекста
-3. Если точной информации нет — предложи проверить на сайте или связаться с администратором
-4. При подборе группы учитывай возраст, уровень и филиал
-5. Всегда мотивируй новичков, снимай страхи
-6. Подводи к записи на пробное занятие
+ВАЖНЫЕ ПРАВИЛА ДЛЯ РАСПИСАНИЯ:
+1. Показывай только группы ДЛЯ НАЧИНАЮЩИХ (новички, начинающие)
+2. НЕ показывай группы для продолжающих, команды, PRO
+3. НЕ показывай возрастные ограничения (18+, 16+ и т.д.) - это внутреннее
+4. Если клиент спрашивает конкретное время - предложи связаться с администратором
+5. Акцент на то, что ВСЕ могут начать с нуля
+
+ВАЖНЫЕ ПРАВИЛА ДЛЯ ЦЕН:
+1. Цены примерные, точные - у администратора
+2. Всегда упоминай про скидки
+3. Пробное занятие платное, но засчитывается в абонемент
 
 СТИЛЬ ОТВЕТОВ:
+• Начинай с эмодзи 🎯 📅 💰 📍
 • Структурированные ответы с абзацами
-• Используй эмодзи для наглядности ✨
 • Поддержка и мотивация для новичков
 • Четкие следующий шаги (запись, консультация)
 
@@ -200,12 +214,12 @@ app.post("/chat", async (req, res) => {
     else if (lowerMessage.includes('звезд') || lowerMessage.includes('звёзд')) branchFilter = 'Звёздная';
     else if (lowerMessage.includes('озерк')) branchFilter = 'Озерки';
 
-    // Быстрые ответы на частые вопросы (для экономии токенов)
+    // Быстрые ответы на частые вопросы
     const quickResponses = {
+      'привет': '👋 Привет! Я чат-бот студии танцев CosmoDance. Чем могу помочь?',
       'сайт': '🌐 Наш сайт: https://cosmo.su/',
-      'телефон': '📞 Телефон студии: +7 (XXX) XXX-XX-XX',
-      'адрес': '📍 Наши филиалы: Дыбенко, Купчино, Звёздная, Озерки\nПодробнее: https://cosmo.su/филиалы/',
-      'привет': '👋 Привет! Я чат-бот студии танцев CosmoDance. Чем могу помочь?'
+      'телефон': '📞 Телефон для записи: +7 (XXX) XXX-XX-XX',
+      'адрес': '📍 Наши филиалы:\n• Дыбенко\n• Купчино\n• Звёздная\n• Озерки\n\nПодробнее: https://cosmo.su/'
     };
 
     for (const [key, response] of Object.entries(quickResponses)) {
@@ -214,60 +228,40 @@ app.post("/chat", async (req, res) => {
       }
     }
 
-    // Формируем контекст
+    // Если спрашивают только расписание - быстрый ответ
+    if (lowerMessage.includes('расписание') && 
+        (lowerMessage.includes('звезд') || lowerMessage.includes('дыбен') || 
+         lowerMessage.includes('купчин') || lowerMessage.includes('озерк'))) {
+      
+      const schedule = await cosmoParser.getClientSchedule(branchFilter);
+      let response = "📅 **Расписание CosmoDance**\n\n";
+      
+      Object.entries(schedule).forEach(([branch, items]) => {
+        if (branch !== '_meta' && items && items.length > 0) {
+          response += `📍 **${branch}**\n`;
+          items.slice(0, 3).forEach(item => {
+            response += `• ${item}\n`;
+          });
+          response += '\n';
+        }
+      });
+      
+      response += `🔗 Актуальное расписание: https://cosmo.su/raspisanie/\n`;
+      response += `📞 Для точного времени: свяжитесь с администратором`;
+      
+      return res.json({ reply: response });
+    }
+
+    // Формируем полный контекст для AI
     const knowledgeText = buildKnowledgeText();
     const scheduleText = await getScheduleContext(branchFilter);
     const pricesText = await getPricesContext();
     
-    // Если спрашивают только расписание или цены - отвечаем сразу
-    if (lowerMessage.includes('расписание') && !lowerMessage.includes('?')) {
-      const scheduleData = await cosmoParser.getSchedule();
-      let response = "📅 **Расписание CosmoDance:**\n\n";
-      
-      if (branchFilter) {
-        const branchData = scheduleData[branchFilter];
-        if (branchData) {
-          response += `📍 **${branchFilter}:**\n`;
-          branchData.slice(0, 5).forEach(item => {
-            response += `• ${item}\n`;
-          });
-        }
-      } else {
-        Object.entries(scheduleData).forEach(([branch, items]) => {
-          if (branch !== '_meta' && items && items.length > 0) {
-            response += `📍 **${branch}:**\n`;
-            items.slice(0, 2).forEach(item => {
-              response += `• ${item}\n`;
-            });
-            response += '\n';
-          }
-        });
-      }
-      
-      response += `\n🔗 Полное расписание: https://cosmo.su/raspisanie/`;
-      return res.json({ reply: response });
-    }
-    
-    if (lowerMessage.includes('цена') && !lowerMessage.includes('?')) {
-      const pricesData = await cosmoParser.getPrices();
-      let response = "💰 **Цены CosmoDance:**\n\n";
-      
-      Object.entries(pricesData).forEach(([category, content]) => {
-        if (category !== 'Информация' && content) {
-          response += `**${category}:**\n`;
-          response += `${content.substring(0, 200)}...\n\n`;
-        }
-      });
-      
-      response += `🔗 Полные цены: https://cosmo.su/prices/`;
-      return res.json({ reply: response });
-    }
-
-    // Формируем сообщения для DeepSeek
+    // Сообщения для DeepSeek
     const messages = [
       { role: "system", content: SYSTEM_PROMPT },
       { role: "system", content: `### БАЗА ЗНАНИЙ СТУДИИ:\n${knowledgeText}` },
-      { role: "system", content: `### АКТУАЛЬНОЕ РАСПИСАНИЕ:\n${scheduleText}` },
+      { role: "system", content: `### РАСПИСАНИЕ (ТОЛЬКО ДЛЯ НАЧИНАЮЩИХ):\n${scheduleText}` },
       { role: "system", content: `### ЦЕНЫ И АБОНЕМЕНТЫ:\n${pricesText}` },
       { role: "user", content: userMessage }
     ];
@@ -288,18 +282,16 @@ app.post("/chat", async (req, res) => {
   } catch (error) {
     console.error("❌ Ошибка обработки запроса:", error.message);
     
-    let errorMessage = "Извините, произошла ошибка при обработке вашего запроса. ";
+    let errorMessage = "Извините, произошла ошибка. ";
     
     if (error.message.includes('rate limit')) {
       errorMessage = "Превышен лимит запросов. Пожалуйста, попробуйте через минуту.";
     } else if (error.message.includes('insufficient_quota')) {
       errorMessage = "Лимит запросов исчерпан на сегодня. Попробуйте завтра.";
-    } else if (error.message.includes('Invalid API key')) {
-      errorMessage = "Проблема с подключением к AI. Администратор уведомлен.";
     }
     
     // Fallback ответ
-    errorMessage += "\n\n📞 Вы можете связаться с нами напрямую:\n";
+    errorMessage += "\n\n📞 Свяжитесь с нами:\n";
     errorMessage += "• Сайт: https://cosmo.su/\n";
     errorMessage += "• Расписание: https://cosmo.su/raspisanie/\n";
     errorMessage += "• Цены: https://cosmo.su/prices/\n";
@@ -308,16 +300,17 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-// API для получения расписания
+// API для получения расписания (клиентская версия)
 app.get("/api/schedule", async (req, res) => {
   try {
     const { branch } = req.query;
-    const schedule = await cosmoParser.getSchedule();
+    const schedule = await cosmoParser.getClientSchedule(branch);
     
     res.json({
       success: true,
       data: schedule,
       last_updated: new Date().toISOString(),
+      note: 'Только группы для начинающих (очищенные названия)',
       source: "https://cosmo.su/raspisanie/"
     });
     
@@ -330,27 +323,6 @@ app.get("/api/schedule", async (req, res) => {
   }
 });
 
-// API для получения цен
-app.get("/api/prices", async (req, res) => {
-  try {
-    const prices = await cosmoParser.getPrices();
-    
-    res.json({
-      success: true,
-      data: prices,
-      last_updated: new Date().toISOString(),
-      source: "https://cosmo.su/prices/"
-    });
-    
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-      link: "https://cosmo.su/prices/"
-    });
-  }
-});
-
 // Статистика и здоровье
 app.get("/health", async (req, res) => {
   const stats = cosmoParser.getStats();
@@ -358,22 +330,17 @@ app.get("/health", async (req, res) => {
   res.json({
     status: "healthy",
     service: "CosmoDance Chat Bot",
-    version: "2.1",
+    version: "2.2",
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || "production",
     features: {
       schedule_parser: true,
       prices_parser: true,
       ai_enabled: true,
-      knowledge_base: KNOWLEDGE.docs?.length || 0,
-      deepseek_api: !!process.env.DEEPSEEK_API_KEY
+      client_schedule: true, // Очищенное для клиентов
+      knowledge_base: KNOWLEDGE.docs?.length || 0
     },
-    stats: {
-      schedule_requests: stats.scheduleRequests,
-      price_requests: stats.priceRequests,
-      errors: stats.errors,
-      cache_valid: stats.cacheValid
-    },
+    stats: stats,
     links: {
       schedule: "https://cosmo.su/raspisanie/",
       prices: "https://cosmo.su/prices/",
@@ -383,62 +350,26 @@ app.get("/health", async (req, res) => {
   });
 });
 
-// Тестовый эндпоинт для проверки парсера
-app.get("/test/parser", async (req, res) => {
-  try {
-    const [schedule, prices] = await Promise.all([
-      cosmoParser.getSchedule(),
-      cosmoParser.getPrices()
-    ]);
-    
-    res.json({
-      success: true,
-      schedule_keys: Object.keys(schedule).filter(k => !k.startsWith('_')),
-      prices_keys: Object.keys(prices),
-      schedule_sample: schedule['Звёздная'] || schedule[Object.keys(schedule)[0]],
-      prices_sample: prices[Object.keys(prices)[0]]?.substring(0, 200),
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// Очистка кэша (админ)
-app.post("/admin/clear-cache", (req, res) => {
-  const { key } = req.body;
-  
-  if (key === process.env.ADMIN_KEY || process.env.NODE_ENV === 'development') {
-    cosmoParser.clearCache();
-    res.json({ success: true, message: "Кэш парсера очищен" });
-  } else {
-    res.status(403).json({ success: false, message: "Доступ запрещен" });
-  }
-});
-
 // ============ ЗАПУСК СЕРВЕРА ============
 const port = process.env.PORT || 10000;
 const host = process.env.HOST || '0.0.0.0';
 
 app.listen(port, host, () => {
   console.log("=".repeat(60));
-  console.log("🚀 CosmoDance Chat Bot v2.1 ЗАПУЩЕН!");
+  console.log("🚀 CosmoDance Chat Bot v2.2 ЗАПУЩЕН!");
   console.log(`📍 Порт: ${port}`);
   console.log(`🌐 Хост: ${host}`);
   console.log(`🔗 URL: http://${host}:${port}`);
   console.log(`🤖 AI: DeepSeek Chat (активен)`);
-  console.log(`📅 Парсер расписания: АКТИВЕН`);
+  console.log(`📅 Парсер расписания: АКТИВЕН (только для начинающих)`);
   console.log(`💰 Парсер цен: АКТИВЕН`);
-  console.log(`🎯 Лимиты: 1000 запросов/день бесплатно`);
+  console.log(`🎯 Особенность: показываем только группы для новичков`);
   console.log("=".repeat(60));
   
   // Загружаем данные при старте
   console.log("🔄 Первоначальная загрузка данных...");
   Promise.all([
-    cosmoParser.getSchedule(),
+    cosmoParser.getClientSchedule(),
     cosmoParser.getPrices()
   ]).then(() => {
     console.log("✅ Данные загружены и готовы к работе");
