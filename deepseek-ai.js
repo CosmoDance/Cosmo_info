@@ -1,12 +1,11 @@
-// deepseek-ai.js - Бесплатный AI для CosmoDance
+// deepseek-ai.js - Простой клиент для DeepSeek API
 import axios from 'axios';
 
 class DeepSeekAI {
-  constructor(apiKey, baseURL = 'https://api.deepseek.com') {
+  constructor(apiKey) {
     this.apiKey = apiKey;
-    this.baseURL = baseURL;
+    this.baseURL = 'https://api.deepseek.com';
     this.model = 'deepseek-chat';
-    this.contextLength = 16000; // токенов
   }
 
   /**
@@ -22,16 +21,15 @@ class DeepSeekAI {
           model: this.model,
           messages: this.formatMessages(messages),
           temperature: options.temperature || 0.7,
-          max_tokens: options.maxTokens || 1000,
+          max_tokens: options.maxTokens || 800,
           stream: false
         },
         {
           headers: {
             'Authorization': `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
+            'Content-Type': 'application/json'
           },
-          timeout: 30000 // 30 секунд
+          timeout: 30000
         }
       );
 
@@ -44,13 +42,18 @@ class DeepSeekAI {
       };
 
     } catch (error) {
-      console.error('❌ Ошибка DeepSeek:', {
-        status: error.response?.status,
-        data: error.response?.data,
-        message: error.message
-      });
+      console.error('❌ Ошибка DeepSeek:', error.response?.data || error.message);
       
-      throw new Error(`DeepSeek API ошибка: ${error.response?.data?.message || error.message}`);
+      // Пользовательские ошибки
+      if (error.response?.status === 401) {
+        throw new Error('Неверный API ключ DeepSeek');
+      } else if (error.response?.status === 429) {
+        throw new Error('Превышен лимит запросов к DeepSeek');
+      } else if (error.code === 'ECONNABORTED') {
+        throw new Error('Таймаут соединения с DeepSeek');
+      }
+      
+      throw new Error(`DeepSeek API ошибка: ${error.message}`);
     }
   }
 
@@ -58,52 +61,10 @@ class DeepSeekAI {
    * Форматируем сообщения для DeepSeek
    */
   formatMessages(messages) {
-    return messages.map(msg => {
-      // DeepSeek принимает system/user/assistant
-      let role = msg.role;
-      
-      // Если роль system, оставляем как есть (DeepSeek поддерживает)
-      if (role === 'system') {
-        return { role: 'system', content: msg.content };
-      }
-      
-      // user и assistant остаются без изменений
-      return { role: role, content: msg.content };
-    });
-  }
-
-  /**
-   * Быстрый ответ (упрощенный)
-   */
-  async quickAnswer(prompt, context = '') {
-    const messages = [
-      {
-        role: 'system',
-        content: `Ты ассистент студии танцев CosmoDance. ${context}`
-      },
-      {
-        role: 'user',
-        content: prompt
-      }
-    ];
-
-    const result = await this.chat(messages);
-    return result.content;
-  }
-
-  /**
-   * Проверка доступности API
-   */
-  async checkHealth() {
-    try {
-      await axios.get(`${this.baseURL}/models`, {
-        headers: { 'Authorization': `Bearer ${this.apiKey}` },
-        timeout: 5000
-      });
-      return true;
-    } catch (error) {
-      return false;
-    }
+    return messages.map(msg => ({
+      role: msg.role,
+      content: msg.content
+    }));
   }
 }
 
