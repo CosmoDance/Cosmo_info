@@ -1,7 +1,7 @@
 {
   "name": "cosmo_info",
-  "version": "2.5.0",
-  "description": "CosmoDance чат-ассистент с базой знаний",
+  "version": "3.0.0",
+  "description": "CosmoDance чат-ассистент с полной базой знаний",
   "type": "module",
   "main": "server.js",
   "scripts": {
