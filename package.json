@@ -1,6 +1,6 @@
 {
   "name": "cosmo_info",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "CosmoDance чат-ассистент с интеллектуальным парсингом",
   "type": "module",
   "main": "server.js",
@@ -22,7 +22,7 @@
     "url": "https://github.com/CosmoDance/Cosmo_info.git"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "axios": "^1.6.0",
