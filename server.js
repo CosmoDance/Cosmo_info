@@ -425,3 +425,220 @@ app.post("/chat", async (req, res) => {
               '• **Дневные:** с 14:00 до 17:00\n' +
               '• **Вечерние:** с 18:00 до 22:00\n\n' +
               '🎯 **Для начинающих** чаще всего вечерние группы.\n' +
+              '📅 **Точное расписание:** https://cosmo.su/raspisanie/',
+      
+      // Что нужно
+      'что нужно': '🎒 **Что нужно для первого занятия:**\n\n' +
+                  '1. **Одежда:** удобная, не сковывающая движения\n' +
+                  '2. **Обувь:** чешки, кроссовки или носки\n' +
+                  '3. **Вода:** бутылка с водой\n' +
+                  '4. **Полотенце:** можно взять с собой\n' +
+                  '5. **Хорошее настроение!**\n\n' +
+                  '💎 **Все остальное предоставляет студия.**',
+      
+      // Тренеры
+      'тренер': '👨‍🏫 **Наши тренеры:**\n\n' +
+               '• Профессиональные хореографы\n' +
+               '• Опыт работы от 5 лет\n' +
+               '• Участие в чемпионатах\n' +
+               '• Индивидуальный подход\n\n' +
+               '🔥 **Все тренеры** специализируются на работе с новичками!\n' +
+               '🔗 **Подробнее о тренерах:** https://cosmo.su/trainers/'
+    };
+
+    // Проверяем локальные ответы
+    const lowerMessage = userMessage.toLowerCase();
+    for (const [key, response] of Object.entries(enhancedResponses)) {
+      if (lowerMessage.includes(key) && key.length > 3) {
+        console.log(`✅ Используем локальный ответ для: ${key}`);
+        return res.json({ 
+          reply: response,
+          source: "local_response"
+        });
+      }
+    }
+
+    // Если AI не настроен, возвращаем общий ответ
+    if (!aiClient) {
+      return res.json({
+        reply: "🎯 **Студия танцев CosmoDance**\n\n" +
+               "📍 **Филиалы:** Звёздная, Дыбенко, Купчино, Озерки\n" +
+               "📅 **Расписание:** https://cosmo.su/raspisanie/\n" +
+               "💰 **Цены:** https://cosmo.su/prices/\n" +
+               "🌐 **Сайт:** https://cosmo.su/\n\n" +
+               "📞 **Свяжитесь с администратором для записи и консультации.**",
+        source: "fallback_no_ai"
+      });
+    }
+
+    // Формируем контекст для AI
+    const knowledgeText = buildKnowledgeText();
+    const scheduleText = await getScheduleContext();
+    const pricesText = await getPricesContext();
+    
+    // Сообщения для DeepSeek
+    const messages = [
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "system", content: `### БАЗА ЗНАНИЙ СТУДИИ:\n${knowledgeText}` },
+      { role: "system", content: `### РАСПИСАНИЕ:\n${scheduleText}` },
+      { role: "system", content: `### ЦЕНЫ И АБОНЕМЕНТЫ:\n${pricesText}` },
+      { role: "user", content: userMessage }
+    ];
+
+    // Вызов DeepSeek API
+    const result = await aiClient.chat(messages, {
+      temperature: 0.7,
+      maxTokens: 800
+    });
+
+    console.log(`✅ AI ответ сформирован (${result.usage?.total_tokens || '?'} токенов)`);
+
+    res.json({ 
+      reply: result.content,
+      tokens: result.usage?.total_tokens || 0,
+      source: "deepseek_ai"
+    });
+
+  } catch (error) {
+    console.error("❌ Ошибка обработки запроса:", error.message);
+    
+    // Fallback ответ
+    res.json({ 
+      reply: `🎯 **Студия танцев CosmoDance**\n\n` +
+             `📍 **Филиалы:** Звёздная, Дыбенко, Купчино, Озерки\n` +
+             `📅 **Расписание:** https://cosmo.su/raspisanie/\n` +
+             `💰 **Цены:** https://cosmo.su/prices/\n` +
+             `🌐 **Сайт:** https://cosmo.su/\n\n` +
+             `📞 **Свяжитесь с нами для записи и консультации.**`,
+      error: error.message,
+      source: "error_fallback"
+    });
+  }
+});
+
+// API для получения расписания
+app.get("/api/schedule", async (req, res) => {
+  try {
+    const { branch } = req.query;
+    const schedule = await cosmoParser.getClientSchedule(branch);
+    
+    res.json({
+      success: true,
+      data: schedule,
+      last_updated: new Date().toISOString(),
+      source: "https://cosmo.su/raspisanie/"
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      link: "https://cosmo.su/raspisanie/"
+    });
+  }
+});
+
+// API для получения цен
+app.get("/api/prices", async (req, res) => {
+  try {
+    const prices = await cosmoParser.getPrices();
+    
+    res.json({
+      success: true,
+      data: prices,
+      last_updated: new Date().toISOString(),
+      source: "https://cosmo.su/prices/"
+    });
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      link: "https://cosmo.su/prices/"
+    });
+  }
+});
+
+// Статистика и здоровье
+app.get("/health", async (req, res) => {
+  const stats = cosmoParser.getStats();
+  
+  res.json({
+    status: "healthy",
+    service: "CosmoDance Chat Bot",
+    version: "2.3",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "production",
+    api_key_configured: !!process.env.DEEPSEEK_API_KEY,
+    features: {
+      schedule_parser: true,
+      prices_parser: true,
+      ai_enabled: !!process.env.DEEPSEEK_API_KEY,
+      knowledge_base: KNOWLEDGE.docs?.length || 0
+    },
+    stats: stats,
+    links: {
+      schedule: "https://cosmo.su/raspisanie/",
+      prices: "https://cosmo.su/prices/",
+      website: "https://cosmo.su/",
+      chat: "/"
+    }
+  });
+});
+
+// Очистка кэша парсера
+app.post("/admin/clear-cache", async (req, res) => {
+  try {
+    cosmoParser.clearCache();
+    res.json({
+      success: true,
+      message: "Кэш парсера очищен"
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// ============ ЗАПУСК СЕРВЕРА ============
+const port = process.env.PORT || 10000;
+const host = process.env.HOST || '0.0.0.0';
+
+app.listen(port, host, () => {
+  console.log("=".repeat(60));
+  console.log("🚀 CosmoDance Chat Bot v2.3 ЗАПУЩЕН!");
+  console.log(`📍 Порт: ${port}`);
+  console.log(`🌐 Хост: ${host}`);
+  console.log(`🔗 URL: http://${host}:${port}`);
+  console.log(`🔑 API ключ: ${process.env.DEEPSEEK_API_KEY ? 'настроен' : 'ОТСУТСТВУЕТ!'}`);
+  console.log("=".repeat(60));
+  
+  if (!process.env.DEEPSEEK_API_KEY) {
+    console.log("⚠️ ВНИМАНИЕ: API ключ DeepSeek не настроен!");
+    console.log("⚠️ Бот будет использовать только локальные ответы");
+  }
+  
+  // Предварительная загрузка данных
+  console.log("🔄 Предварительная загрузка данных...");
+  Promise.all([
+    cosmoParser.getClientSchedule(),
+    cosmoParser.getPrices()
+  ]).then(() => {
+    console.log("✅ Данные загружены и готовы к работе");
+  }).catch(error => {
+    console.log("⚠️ Ошибка загрузки данных:", error.message);
+  });
+});
+
+// Обработка завершения
+process.on('SIGTERM', () => {
+  console.log('🔄 Получен SIGTERM, завершаем работу...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('🔄 Получен SIGINT, завершаем работу...');
+  process.exit(0);
+});
