@@ -1,4 +1,4 @@
-// cosmo-parser.js - Умный парсер для cosmo.su
+// cosmo-parser.js - Надежный парсер для Render
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
@@ -6,398 +6,368 @@ class CosmoParser {
   constructor() {
     this.scheduleUrl = 'https://cosmo.su/raspisanie/';
     this.pricesUrl = 'https://cosmo.su/prices/';
+    
+    // Кэш в памяти
     this.cache = {
       schedule: null,
       prices: null,
       timestamp: 0,
-      ttl: 2 * 60 * 60 * 1000 // 2 часа
+      ttl: 15 * 60 * 1000 // 15 минут
     };
+    
     this.stats = {
-      scheduleRequests: 0,
-      priceRequests: 0,
-      errors: 0
+      totalRequests: 0,
+      successfulRequests: 0,
+      failedRequests: 0,
+      cacheHits: 0
     };
   }
 
   /**
-   * Определить, доступна ли группа для новичков
+   * Пробуем загрузить данные с сайта
    */
-  isGroupForBeginners(groupName) {
-    const lowerName = groupName.toLowerCase();
+  async tryFetchData(url) {
+    this.stats.totalRequests++;
     
-    // Группы НЕ для новичков (нужна подготовка)
-    const advancedKeywords = [
-      'продолжающие', 'продолжающих', 'продвинутый', 'про', 'pro', 
-      'команда', 'team', 'состав', 'отбор', 'кастинг', 'конкурс',
-      'advanced', 'intermediate', 'competition', 'show', 'выступление'
-    ];
+    try {
+      console.log(`🌐 Пробуем загрузить: ${url}`);
+      
+      const response = await axios.get(url, {
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+          'Accept-Encoding': 'gzip, deflate',
+          'Connection': 'keep-alive'
+        }
+      });
+      
+      console.log(`✅ Успешно: ${response.status}, размер: ${response.data.length} байт`);
+      this.stats.successfulRequests++;
+      
+      return response.data;
+      
+    } catch (error) {
+      this.stats.failedRequests++;
+      console.error(`❌ Ошибка загрузки ${url}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Получить расписание (с кэшированием)
+   */
+  async getSchedule() {
+    // Проверяем кэш
+    if (this.cache.schedule && (Date.now() - this.cache.timestamp < this.cache.ttl)) {
+      this.stats.cacheHits++;
+      console.log('📅 Используем кэшированное расписание');
+      return this.cache.schedule;
+    }
+
+    const html = await this.tryFetchData(this.scheduleUrl);
     
-    // Сначала проверяем, точно ли НЕ для новичков
-    for (const keyword of advancedKeywords) {
-      if (lowerName.includes(keyword)) {
-        return false; // Не для новичков
+    if (html) {
+      try {
+        const schedule = this.parseSchedule(html);
+        if (schedule && Object.keys(schedule).filter(k => !k.startsWith('_')).length > 0) {
+          // Сохраняем в кэш
+          this.cache.schedule = schedule;
+          this.cache.timestamp = Date.now();
+          return schedule;
+        }
+      } catch (parseError) {
+        console.error('❌ Ошибка парсинга HTML:', parseError.message);
       }
     }
     
-    // По умолчанию - для новичков (большинство групп)
-    return true;
+    // Если не удалось, возвращаем fallback
+    console.log('⚠️ Используем fallback расписание');
+    return this.getFallbackSchedule();
   }
 
   /**
-   * Очистить названия групп от внутренних обозначений
+   * Парсим расписание из HTML
    */
-  cleanGroupNames(groupsArray) {
-    return groupsArray.map(group => {
-      let cleaned = group;
+  parseSchedule(html) {
+    const $ = cheerio.load(html);
+    const schedule = {};
+    
+    // Ищем текст на странице
+    const pageText = $('body').text();
+    const lines = pageText.split('\n')
+      .map(line => line.trim())
+      .filter(line => line.length > 10 && line.length < 200);
+    
+    // Филиалы для поиска
+    const branches = [
+      { name: 'Звёздная', patterns: ['звездн', 'звёздн'] },
+      { name: 'Дыбенко', patterns: ['дыбенк'] },
+      { name: 'Купчино', patterns: ['купчин'] },
+      { name: 'Озерки', patterns: ['озерк'] }
+    ];
+    
+    // Собираем строки для каждого филиала
+    branches.forEach(branch => {
+      const branchLines = lines.filter(line => {
+        const lowerLine = line.toLowerCase();
+        return branch.patterns.some(pattern => lowerLine.includes(pattern));
+      }).slice(0, 15); // Ограничиваем количество
       
-      // 1. Убираем возрастные обозначения
-      cleaned = cleaned
-        .replace(/\s*\d+\+/gi, '')           // 18+, 16+, 12+
-        .replace(/\s*\d+-\d+\s*/g, ' ')      // 7-9, 12-14 лет
-        .replace(/\s*\d+\s*лет\s*/gi, ' ')   // 5 лет, 10 лет
-        .replace(/\s*от\s*\d+\s*лет\s*/gi, ' ') // от 10 лет
-        .replace(/\s*до\s*\d+\s*лет\s*/gi, ' ') // до 16 лет
-        .replace(/\(\s*\d+[+-]?\s*\)/g, '')  // (18+), (7-12)
-        .replace(/\[\s*\d+[+-]?\s*\]/g, ''); // [18+], [7-12]
-      
-      // 2. Убираем внутренние обозначения уровня (но учитываем их в логике)
-      const levelKeywords = {
-        'новички': true,
-        'начинающие': true,
-        'начальный': true,
-        'с нуля': true,
-        'база': true,
-        'базовый': true,
-        'продолжающие': false,
-        'продолжающих': false,
-        'продвинутый': false,
-        'команда': false,
-        'pro': false
+      if (branchLines.length > 0) {
+        schedule[branch.name] = branchLines;
+      }
+    });
+    
+    // Если нашли данные, добавляем метаданные
+    if (Object.keys(schedule).length > 0) {
+      schedule._meta = {
+        source: this.scheduleUrl,
+        fetched_at: new Date().toISOString(),
+        parser: 'cosmo-parser-2.0',
+        branches_found: Object.keys(schedule).filter(k => !k.startsWith('_'))
       };
       
-      Object.keys(levelKeywords).forEach(keyword => {
-        const regex = new RegExp(`\\s*\\(${keyword}\\)|\\s*${keyword}\\s*`, 'gi');
-        cleaned = cleaned.replace(regex, ' ');
-      });
-      
-      // 3. Убираем технические обозначения
-      cleaned = cleaned
-        .replace(/\s*NEW\s*/gi, ' ')
-        .replace(/\s*НОВЫЙ\s*/gi, ' ')
-        .replace(/\s*\(2\)/g, ' ')
-        .replace(/\s*\d{1,2}[:.]\d{2}\s*[-—]\s*\d{1,2}[:.]\d{2}/g, ' ') // время 18:00-19:00
-        .replace(/\(доб\.\s*зан\.\)/gi, ' ')
-        .replace(/\(доп\.\s*группа\)/gi, ' ');
-      
-      // 4. Добавляем эмодзи для наглядности
-      if (this.isGroupForBeginners(group)) {
-        cleaned = `🎯 ${cleaned.trim()}`;
-      } else {
-        cleaned = `⭐ ${cleaned.trim()} (требуется подготовка)`;
-      }
-      
-      // 5. Чистим от лишних пробелов и возвращаем
-      return cleaned.replace(/\s+/g, ' ').trim();
-    });
+      console.log(`✅ Спарсено расписание для филиалов: ${schedule._meta.branches_found.join(', ')}`);
+    }
+    
+    return schedule;
   }
 
   /**
-   * Получить расписание ТОЛЬКО для новичков (очищенное)
+   * Получить цены (с кэшированием)
+   */
+  async getPrices() {
+    // Проверяем кэш
+    if (this.cache.prices && (Date.now() - this.cache.timestamp < this.cache.ttl)) {
+      return this.cache.prices;
+    }
+
+    const html = await this.tryFetchData(this.pricesUrl);
+    
+    if (html) {
+      try {
+        const prices = this.parsePrices(html);
+        if (prices && Object.keys(prices).length > 0) {
+          // Сохраняем в кэш
+          this.cache.prices = prices;
+          return prices;
+        }
+      } catch (parseError) {
+        console.error('❌ Ошибка парсинга цен:', parseError.message);
+      }
+    }
+    
+    // Если не удалось, возвращаем fallback
+    console.log('⚠️ Используем fallback цены');
+    return this.getFallbackPrices();
+  }
+
+  /**
+   * Парсим цены из HTML
+   */
+  parsePrices(html) {
+    const $ = cheerio.load(html);
+    const prices = {};
+    
+    // Ищем элементы с ценами
+    $('h1, h2, h3, h4, h5, h6, p, div, span, li').each((i, element) => {
+      const text = $(element).text().trim();
+      const lowerText = text.toLowerCase();
+      
+      if (text.length > 10 && text.length < 300) {
+        if (lowerText.includes('цена') || lowerText.includes('стоимость') || 
+            lowerText.includes('абонемент') || lowerText.includes('руб') ||
+            /\d+\s*₽/.test(text) || /\d+\s*руб/.test(text)) {
+          
+          const key = text.substring(0, 80).trim();
+          if (key && !prices[key]) {
+            prices[key] = text;
+          }
+        }
+      }
+    });
+    
+    // Добавляем обязательные поля
+    prices['🔗 Актуальные цены на сайте'] = this.pricesUrl;
+    prices['📞 Консультация по ценам'] = 'Для точного расчета свяжитесь с администратором';
+    
+    if (Object.keys(prices).length > 2) {
+      console.log(`✅ Найдено ${Object.keys(prices).length} ценовых категорий`);
+    }
+    
+    return prices;
+  }
+
+  /**
+   * Получить расписание для клиентов (очищенное)
    */
   async getClientSchedule(branch = null) {
     try {
       const schedule = await this.getSchedule();
-      const filtered = {};
+      const result = {};
       
-      Object.entries(schedule).forEach(([branchName, groups]) => {
+      Object.entries(schedule).forEach(([branchName, items]) => {
         if (branchName.startsWith('_')) {
-          filtered[branchName] = groups; // Метаданные
+          result[branchName] = items;
           return;
         }
         
-        // Фильтр по филиалу если указан
+        // Фильтр по филиалу
         if (branch && !branchName.toLowerCase().includes(branch.toLowerCase())) {
           return;
         }
         
-        if (Array.isArray(groups)) {
-          // Берем только группы для новичков (первые 8)
-          const beginnerGroups = groups
-            .filter(group => this.isGroupForBeginners(group))
+        if (Array.isArray(items)) {
+          // Фильтруем группы для начинающих
+          const beginnerGroups = items
+            .filter(item => this.isForBeginners(item))
+            .map(item => this.cleanGroupName(item))
             .slice(0, 8);
           
           if (beginnerGroups.length > 0) {
-            // Очищаем названия
-            filtered[branchName] = this.cleanGroupNames(beginnerGroups);
+            result[branchName] = beginnerGroups;
           }
         }
       });
       
-      return filtered;
+      return result;
       
     } catch (error) {
-      console.error('❌ Ошибка получения клиентского расписания:', error.message);
+      console.error('❌ Ошибка подготовки клиентского расписания:', error.message);
       return this.getFallbackClientSchedule(branch);
     }
   }
 
   /**
-   * Получить расписание с сайта
+   * Проверка, подходит ли группа для новичков
    */
-  async getSchedule() {
-    this.stats.scheduleRequests++;
-    
-    // Проверяем кэш
-    if (this.cache.schedule && (Date.now() - this.cache.timestamp < this.cache.ttl)) {
-      console.log('📅 Используем кэшированное расписание');
-      return this.cache.schedule;
-    }
-
-    try {
-      console.log('🌐 Парсим расписание с cosmo.su...');
-      const { data } = await axios.get(this.scheduleUrl, {
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8'
-        }
-      });
-
-      const $ = cheerio.load(data);
-      const schedule = {};
-
-      // Ищем все текстовые блоки
-      const text = $('body').text();
-      
-      // Филиалы для поиска
-      const branches = [
-        { name: 'Звёздная', keywords: ['звездн', 'звёздн'] },
-        { name: 'Дыбенко', keywords: ['дыбенк'] },
-        { name: 'Купчино', keywords: ['купчин'] },
-        { name: 'Озерки', keywords: ['озерк'] }
-      ];
-
-      // Разбиваем текст на строки
-      const lines = text.split('\n')
-        .map(line => line.trim())
-        .filter(line => line.length > 10); // Берем только значимые строки
-
-      // Ищем расписание по филиалам
-      branches.forEach(branch => {
-        const branchLines = lines.filter(line => 
-          branch.keywords.some(keyword => line.toLowerCase().includes(keyword))
-        );
-        
-        if (branchLines.length > 0) {
-          // Берем первые 15 строк для каждого филиала
-          schedule[branch.name] = branchLines.slice(0, 15);
-        }
-      });
-
-      // Если ничего не нашли, используем fallback
-      if (Object.keys(schedule).length === 0) {
-        console.log('⚠️ Расписание не найдено, используем fallback');
-        return this.getFallbackSchedule();
-      }
-
-      // Добавляем метаданные
-      schedule._meta = {
-        source: this.scheduleUrl,
-        fetched_at: new Date().toISOString(),
-        parser_version: '1.2',
-        note: 'Расписание парсится с сайта студии'
-      };
-
-      // Сохраняем в кэш
-      this.cache.schedule = schedule;
-      this.cache.timestamp = Date.now();
-      
-      console.log(`✅ Расписание получено. Филиалы: ${Object.keys(schedule).filter(k => !k.startsWith('_')).join(', ')}`);
-      return schedule;
-
-    } catch (error) {
-      this.stats.errors++;
-      console.error('❌ Ошибка парсинга расписания:', error.message);
-      return this.getFallbackSchedule();
-    }
+  isForBeginners(text) {
+    const lower = text.toLowerCase();
+    const advancedKeywords = ['продолжающ', 'pro', 'команд', 'состав', 'отбор', 'advanced', 'выступлен'];
+    return !advancedKeywords.some(keyword => lower.includes(keyword));
   }
 
   /**
-   * Получить цены с сайта
+   * Очистка названия группы
    */
-  async getPrices() {
-    this.stats.priceRequests++;
-    
-    if (this.cache.prices && (Date.now() - this.cache.timestamp < this.cache.ttl)) {
-      return this.cache.prices;
-    }
-
-    try {
-      console.log('💰 Парсим цены с cosmo.su...');
-      const { data } = await axios.get(this.pricesUrl, {
-        timeout: 15000,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-      });
-
-      const $ = cheerio.load(data);
-      const prices = {};
-
-      // Ищем заголовки с ценами
-      $('h1, h2, h3, h4, strong, b').each((i, element) => {
-        const text = $(element).text().trim().toLowerCase();
-        if (text.includes('цена') || text.includes('стоимость') || text.includes('абонемент')) {
-          const title = $(element).text().trim();
-          const content = $(element).nextAll().slice(0, 3).text().trim();
-          
-          if (content && content.length > 20) {
-            prices[title] = content.substring(0, 500);
-          }
-        }
-      });
-
-      // Если не нашли, ищем любые цены
-      if (Object.keys(prices).length === 0) {
-        const bodyText = $('body').text();
-        const priceMatches = bodyText.match(/\d+\s*₽|\d+\s*руб|от\s*\d+/gi);
-        
-        if (priceMatches) {
-          prices['Обнаруженные цены'] = [...new Set(priceMatches)].slice(0, 10).join(', ');
-        }
-      }
-
-      // Добавляем ссылку всегда
-      prices['Сайт с ценами'] = this.pricesUrl;
-
-      this.cache.prices = prices;
-      
-      console.log(`✅ Цены получены. Найдено: ${Object.keys(prices).length} категорий`);
-      return prices;
-
-    } catch (error) {
-      this.stats.errors++;
-      console.error('❌ Ошибка парсинга цен:', error.message);
-      return { 
-        'Информация': 'Цены на сайте: ' + this.pricesUrl,
-        'Примечание': 'Для точной информации свяжитесь с администратором'
-      };
-    }
+  cleanGroupName(text) {
+    return `🎯 ${text
+      .replace(/\s*\d+\+/gi, '')
+      .replace(/\s*\(\d+.*?\)/g, '')
+      .replace(/\s*\(.*продолж.*\)/gi, '')
+      .replace(/\s*\(.*про.*\)/gi, '')
+      .replace(/\d{1,2}[:.]\d{2}\s*[-—]\s*\d{1,2}[:.]\d{2}/g, '')
+      .trim()}`;
   }
 
   /**
-   * Fallback расписание для клиентов (очищенное)
-   */
-  getFallbackClientSchedule(branch = null) {
-    const fallback = {
-      'Звёздная': [
-        '🎯 High Heels (высокие каблуки)',
-        '🎯 Twerk (тверк)',
-        '🎯 Акробатика',
-        '🎯 Zumba (зумба)',
-        '🎯 Hip-Hop (хип-хоп)',
-        '🎯 Jazz Funk (джаз-фанк)'
-      ],
-      'Дыбенko': [
-        '🎯 Hip-Hop (хип-хоп) для начинающих',
-        '🎯 Jazz Funk (джаз-фанк)',
-        '🎯 Break Dance (брейк-данс)',
-        '🎯 Contemporary (контемпорари)',
-        '🎯 Latina (латина)'
-      ],
-      'Купчино': [
-        '🎯 Contemporary (контемпорари)',
-        '🎯 Shuffle (шаффл)',
-        '🎯 Strip Dance (стрип-пластика)',
-        '🎯 Акробатика для детей',
-        '🎯 Бальные танцы'
-      ],
-      'Озерки': [
-        '🎯 Latina Solo (латина соло)',
-        '🎯 Dance Mix (дэнс микс)',
-        '🎯 Растяжка',
-        '🎯 K-Pop (кей-поп)',
-        '🎯 Восточные танцы'
-      ],
-      '_meta': {
-        source: 'fallback',
-        fetched_at: new Date().toISOString(),
-        note: 'Это общая информация. Актуальное расписание на сайте.'
-      }
-    };
-
-    // Фильтр по филиалу если указан
-    if (branch) {
-      const foundBranch = Object.keys(fallback).find(b => 
-        b.toLowerCase().includes(branch.toLowerCase()) || 
-        branch.toLowerCase().includes(b.toLowerCase())
-      );
-      
-      if (foundBranch && foundBranch !== '_meta') {
-        return {
-          [foundBranch]: fallback[foundBranch],
-          _meta: fallback._meta
-        };
-      }
-    }
-    
-    return fallback;
-  }
-
-  /**
-   * Fallback расписание (полное)
+   * Fallback расписание (используется при ошибках)
    */
   getFallbackSchedule() {
     return {
       'Звёздная': [
-        'High Heels 18+ новички Пн, Чт 19:00-20:00',
-        'Twerk 16+ начинающие Вт, Пт 18:00-19:00',
-        'Акробатика 10+ Ср, Сб 17:00-18:00',
-        'Zumba 18+ Вс 12:00-14:00',
-        'Hip-Hop 12+ новички Пн, Ср 18:00-19:00'
+        'High Heels (новички) Пн, Чт 19:00',
+        'Twerk (начальный) Вт, Пт 18:00',
+        'Hip-Hop (с нуля) Пн, Ср 18:00',
+        'Акробатика (база) Ср, Сб 17:00',
+        'Zumba (для всех) Вс 12:00'
       ],
       'Дыбенko': [
-        'Hip-Hop 12+ новички Пн, Ср 18:00-19:00',
-        'Jazz Funk 16+ начинающие Вт, Чт 19:00-20:00',
-        'Break Dance 8-14 новички Вт, Сб 17:00-18:00',
-        'Contemporary 10+ новички Пт, Вс 15:00-16:00',
-        'Latina 18+ новички Ср, Сб 19:00-20:00'
+        'Hip-Hop (новички) Пн, Ср 18:00',
+        'Jazz Funk (начальный) Вт, Чт 19:00',
+        'Break Dance (база) Вт, Сб 17:00',
+        'Contemporary (с нуля) Пт, Вс 15:00',
+        'Latina (новички) Ср, Сб 19:00'
       ],
       'Купчино': [
-        'Contemporary 12+ новички Пн, Ср 17:30-18:30',
-        'Shuffle 7+ начинающие Вт, Чт 18:00-19:00',
-        'Strip Dance 18+ новички Пт 19:00-20:00',
-        'Акробатика 5+ дети Сб 11:00-12:00',
-        'Бальные танцы 18+ новички Пн, Чт 19:30-20:30'
+        'Contemporary (начальный) Пн, Ср 17:30',
+        'Shuffle (с нуля) Вт, Чт 18:00',
+        'Strip Dance (база) Пт 19:00',
+        'Бальные танцы (новички) Пн, Чт 19:30'
       ],
       'Озерки': [
-        'Latina Solo 18+ новички Вт, Чт 18:30-19:30',
-        'Dance Mix 8-12 начинающие Пн, Ср 17:00-18:00',
-        'Растяжка 16+ Пт 19:00-20:00',
-        'K-Pop 10+ новички Сб 13:00-14:00',
-        'Восточные танцы 18+ новички Ср, Сб 20:00-21:00'
+        'Latina Solo (новички) Вт, Чт 18:30',
+        'Dance Mix (начальный) Пн, Ср 17:00',
+        'K-Pop (с нуля) Сб 13:00',
+        'Восточные танцы (база) Ср, Сб 20:00'
       ],
       '_meta': {
         source: 'fallback',
         fetched_at: new Date().toISOString(),
-        note: 'Это временное расписание. Проверьте актуальное на сайте.'
+        note: 'Это общая информация. Актуальное расписание на сайте.',
+        link: this.scheduleUrl
       }
     };
   }
 
   /**
-   * Получить статистику
+   * Fallback цены
+   */
+  getFallbackPrices() {
+    return {
+      '💰 Абонементы': '• 4 занятия: 3500-4500₽\n• 8 занятий: 6000-8000₽\n• 12 занятий: 8500-10000₽',
+      '🎫 Разовые занятия': '• Групповое: 1000-1500₽\n• Индивидуальное: от 1500₽',
+      '🎁 Скидки и акции': '• Студентам: -10%\n• Семейным парам: -15%\n• При покупке 2+ абонементов: -10%',
+      '💎 Пробное занятие': '1000₽ (засчитывается в первый абонемент)',
+      '⏰ Срок действия абонемента': '30 дней с даты первого занятия',
+      '❄️ Заморозка абонемента': 'До 14 дней по запросу',
+      '🔗 Актуальные цены на сайте': this.pricesUrl,
+      '📞 Консультация администратора': 'Для точного расчета свяжитесь с нами'
+    };
+  }
+
+  /**
+   * Fallback расписание для клиентов
+   */
+  getFallbackClientSchedule(branch = null) {
+    const schedule = this.getFallbackSchedule();
+    
+    if (branch) {
+      const foundBranch = Object.keys(schedule).find(b => 
+        b.toLowerCase().includes(branch.toLowerCase())
+      );
+      
+      if (foundBranch && foundBranch !== '_meta') {
+        const result = {};
+        result[foundBranch] = schedule[foundBranch].map(item => 
+          this.cleanGroupName(item)
+        );
+        result._meta = schedule._meta;
+        return result;
+      }
+    }
+    
+    // Очищаем все названия для клиентской версии
+    const result = {};
+    Object.entries(schedule).forEach(([key, value]) => {
+      if (key.startsWith('_')) {
+        result[key] = value;
+      } else if (Array.isArray(value)) {
+        result[key] = value.map(item => this.cleanGroupName(item));
+      }
+    });
+    
+    return result;
+  }
+
+  /**
+   * Статистика парсера
    */
   getStats() {
     return {
-      schedule_requests: this.stats.scheduleRequests,
-      price_requests: this.stats.priceRequests,
-      errors: this.stats.errors,
-      cacheAge: Date.now() - this.cache.timestamp,
-      cacheValid: this.cache.timestamp > 0 && (Date.now() - this.cache.timestamp < this.cache.ttl),
-      scheduleAvailable: !!this.cache.schedule,
-      pricesAvailable: !!this.cache.prices
+      ...this.stats,
+      cache: {
+        schedule: !!this.cache.schedule,
+        prices: !!this.cache.prices,
+        age: this.cache.timestamp ? Date.now() - this.cache.timestamp : 0,
+        ttl: this.cache.ttl
+      },
+      urls: {
+        schedule: this.scheduleUrl,
+        prices: this.pricesUrl
+      }
     };
   }
 
